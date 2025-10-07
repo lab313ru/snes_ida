@@ -16,4 +16,5 @@ IDA 9.2 Required.
 
 # TODO
 
+Name Registers.
 Demo of work with proc/ldr.
