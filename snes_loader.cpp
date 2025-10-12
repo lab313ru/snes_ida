@@ -6,9 +6,217 @@
 #include <segregs.hpp>
 #include <vector>
 #include <cmath>
+#include <tuple>
 
 #include "snes_cart.hpp"
 #include "65816.hpp"
+
+static const std::vector<std::tuple<uint16_t, const char*, const char*>> SNES_REGS = {
+	{ 0x2100, "INIDISP", "Screen Display Register" },
+	{ 0x2101, "OBSEL", "Object Size and Character Size Register" },
+	{ 0x2102, "OAMADDL", "OAM Address Registers (Low)" },
+	{ 0x2103, "OAMADDH", "OAM Address Registers (High)" },
+	{ 0x2104, "OAMDATA", "OAM Data Write Register" },
+	{ 0x2105, "BGMODE", "BG Mode and Character Size Register" },
+	{ 0x2106, "MOSAIC", "Mosaic Register" },
+	{ 0x2107, "BG1SC", "BG Tilemap Address Registers (BG1)" },
+	{ 0x2108, "BG2SC", "BG Tilemap Address Registers (BG2)" },
+	{ 0x2109, "BG3SC", "BG Tilemap Address Registers (BG3)" },
+	{ 0x210A, "BG4SC", "BG Tilemap Address Registers (BG4)" },
+	{ 0x210B, "BG12NBA", "BG Character Address Registers (BG1&2)" },
+	{ 0x210C, "BG34NBA", "BG Character Address Registers (BG3&4)" },
+	{ 0x210D, "BG1HOFS", "BG Scroll Registers (BG1)" },
+	{ 0x210E, "BG1VOFS", "BG Scroll Registers (BG1)" },
+	{ 0x210F, "BG2HOFS", "BG Scroll Registers (BG2)" },
+	{ 0x2110, "BG2VOFS", "BG Scroll Registers (BG2)" },
+	{ 0x2111, "BG3HOFS", "BG Scroll Registers (BG3)" },
+	{ 0x2112, "BG3VOFS", "BG Scroll Registers (BG3)" },
+	{ 0x2113, "BG4HOFS", "BG Scroll Registers (BG4)" },
+	{ 0x2114, "BG4VOFS", "BG Scroll Registers (BG4)" },
+	{ 0x2115, "VMAIN", "Video Port Control Register" },
+	{ 0x2116, "VMADDL", "VRAM Address Registers (Low)" },
+	{ 0x2117, "VMADDH", "VRAM Address Registers (High)" },
+	{ 0x2118, "VMDATAL", "VRAM Data Write Registers (Low)" },
+	{ 0x2119, "VMDATAH", "VRAM Data Write Registers (High)" },
+	{ 0x211A, "M7SEL", "Mode 7 Settings Register" },
+	{ 0x211B, "M7A", "Mode 7 Matrix Registers" },
+	{ 0x211C, "M7B", "Mode 7 Matrix Registers" },
+	{ 0x211D, "M7C", "Mode 7 Matrix Registers" },
+	{ 0x211E, "M7D", "Mode 7 Matrix Registers" },
+	{ 0x211F, "M7X", "Mode 7 Matrix Registers" },
+	{ 0x2120, "M7Y", "Mode 7 Matrix Registers" },
+	{ 0x2121, "CGADD", "CGRAM Address Register" },
+	{ 0x2122, "CGDATA", "CGRAM Data Write Register" },
+	{ 0x2123, "W12SEL", "Window Mask Settings Registers" },
+	{ 0x2124, "W34SEL", "Window Mask Settings Registers" },
+	{ 0x2125, "WOBJSEL", "Window Mask Settings Registers" },
+	{ 0x2126, "WH0", "Window Position Registers (WH0)" },
+	{ 0x2127, "WH1", "Window Position Registers (WH1)" },
+	{ 0x2128, "WH2", "Window Position Registers (WH2)" },
+	{ 0x2129, "WH3", "Window Position Registers (WH3)" },
+	{ 0x212A, "WBGLOG", "Window Mask Logic registers (BG)" },
+	{ 0x212B, "WOBJLOG", "Window Mask Logic registers (OBJ)" },
+	{ 0x212C, "TM", "Screen Destination Registers" },
+	{ 0x212D, "TS", "Screen Destination Registers" },
+	{ 0x212E, "TMW", "Window Mask Destination Registers" },
+	{ 0x212F, "TSW", "Window Mask Destination Registers" },
+	{ 0x2130, "CGWSEL", "Color Math Registers" },
+	{ 0x2131, "CGADSUB", "Color Math Registers" },
+	{ 0x2132, "COLDATA", "Color Math Registers" },
+	{ 0x2133, "SETINI", "Screen Mode Select Register" },
+	{ 0x2134, "MPYL", "Multiplication Result Registers" },
+	{ 0x2135, "MPYM", "Multiplication Result Registers" },
+	{ 0x2136, "MPYH", "Multiplication Result Registers" },
+	{ 0x2137, "SLHV", "Software Latch Register" },
+	{ 0x2138, "OAMDATAREAD", "OAM Data Read Register" },
+	{ 0x2139, "VMDATALREAD", "VRAM Data Read Register (Low)" },
+	{ 0x213A, "VMDATAHREAD", "VRAM Data Read Register (High)" },
+	{ 0x213B, "CGDATAREAD", "CGRAM Data Read Register" },
+	{ 0x213C, "OPHCT", "Scanline Location Registers (Horizontal)" },
+	{ 0x213D, "OPVCT", "Scanline Location Registers (Vertical)" },
+	{ 0x213E, "STAT77", "PPU Status Register" },
+	{ 0x213F, "STAT78", "PPU Status Register" },
+	{ 0x2140, "APUIO0", "APU IO Registers" },
+	{ 0x2141, "APUIO1", "APU IO Registers" },
+	{ 0x2142, "APUIO2", "APU IO Registers" },
+	{ 0x2143, "APUIO3", "APU IO Registers" },
+	{ 0x2180, "WMDATA", "WRAM Data Register" },
+	{ 0x2181, "WMADDL", "WRAM Address Registers" },
+	{ 0x2182, "WMADDM", "WRAM Address Registers" },
+	{ 0x2183, "WMADDH", "WRAM Address Registers" },
+
+	//A-Bus registers (CPU registers)
+	{ 0x4016, "JOYSER0", "Old Style Joypad Registers" },
+	{ 0x4017, "JOYSER1", "Old Style Joypad Registers" },
+
+	{ 0x4200, "NMITIMEN", "Interrupt Enable Register" },
+	{ 0x4201, "WRIO", "IO Port Write Register" },
+	{ 0x4202, "WRMPYA", "Multiplicand Registers" },
+	{ 0x4203, "WRMPYB", "Multiplicand Registers" },
+	{ 0x4204, "WRDIVL", "Divisor & Dividend Registers" },
+	{ 0x4205, "WRDIVH", "Divisor & Dividend Registers" },
+	{ 0x4206, "WRDIVB", "Divisor & Dividend Registers" },
+	{ 0x4207, "HTIMEL", "IRQ Timer Registers (Horizontal - Low)" },
+	{ 0x4208, "HTIMEH", "IRQ Timer Registers (Horizontal - High)" },
+	{ 0x4209, "VTIMEL", "IRQ Timer Registers (Vertical - Low)" },
+	{ 0x420A, "VTIMEH", "IRQ Timer Registers (Vertical - High)" },
+	{ 0x420B, "MDMAEN", "DMA Enable Register" },
+	{ 0x420C, "HDMAEN", "HDMA Enable Register" },
+	{ 0x420D, "MEMSEL", "ROM Speed Register" },
+	{ 0x4210, "RDNMI", "Interrupt Flag Registers" },
+	{ 0x4211, "TIMEUP", "Interrupt Flag Registers" },
+	{ 0x4212, "HVBJOY", "PPU Status Register" },
+	{ 0x4213, "RDIO", "IO Port Read Register" },
+	{ 0x4214, "RDDIVL", "Multiplication Or Divide Result Registers (Low)" },
+	{ 0x4215, "RDDIVH", "Multiplication Or Divide Result Registers (High)" },
+	{ 0x4216, "RDMPYL", "Multiplication Or Divide Result Registers (Low)" },
+	{ 0x4217, "RDMPYH", "Multiplication Or Divide Result Registers (High)" },
+	{ 0x4218, "JOY1L", "Controller Port Data Registers (Pad 1 - Low)" },
+	{ 0x4219, "JOY1H", "Controller Port Data Registers (Pad 1 - High)" },
+	{ 0x421A, "JOY2L", "Controller Port Data Registers (Pad 2 - Low)" },
+	{ 0x421B, "JOY2H", "Controller Port Data Registers (Pad 2 - High)" },
+	{ 0x421C, "JOY3L", "Controller Port Data Registers (Pad 3 - Low)" },
+	{ 0x421D, "JOY3H", "Controller Port Data Registers (Pad 3 - High)" },
+	{ 0x421E, "JOY4L", "Controller Port Data Registers (Pad 4 - Low)" },
+	{ 0x421F, "JOY4H", "Controller Port Data Registers (Pad 4 - High)" },
+
+	{ 0x4300, "DMAP0", "(H)DMA Control" },
+	{ 0x4301, "BBAD0", "(H)DMA B-Bus Address" },
+	{ 0x4302, "A1T0L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4303, "A1T0H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4304, "A1B0", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4305, "DAS0L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4306, "DAS0H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4307, "DAS0B", "HDMA Indirect Address (Bank)" },
+	{ 0x4308, "A2A0L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4309, "A2A0H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x430A, "NTLR0", "HDMA Line Counter" },
+
+	{ 0x4310, "DMAP1", "(H)DMA Control" },
+	{ 0x4311, "BBAD1", "(H)DMA B-Bus Address" },
+	{ 0x4312, "A1T1L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4313, "A1T1H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4314, "A1B1", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4315, "DAS1L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4316, "DAS1H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4317, "DAS1B", "HDMA Indirect Address (Bank)" },
+	{ 0x4318, "A2A1L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4319, "A2A1H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x431A, "NTLR1", "HDMA Line Counter" },
+
+	{ 0x4320, "DMAP2", "(H)DMA Control" },
+	{ 0x4321, "BBAD2", "(H)DMA B-Bus Address" },
+	{ 0x4322, "A1T2L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4323, "A1T2H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4324, "A1B2", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4325, "DAS2L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4326, "DAS2H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4327, "DAS2B", "HDMA Indirect Address (Bank)" },
+	{ 0x4328, "A2A2L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4329, "A2A2H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x432A, "NTLR2", "HDMA Line Counter" },
+
+	{ 0x4330, "DMAP3", "(H)DMA Control" },
+	{ 0x4331, "BBAD3", "(H)DMA B-Bus Address" },
+	{ 0x4332, "A1T3L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4333, "A1T3H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4334, "A1B3", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4335, "DAS3L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4336, "DAS3H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4337, "DAS3B", "HDMA Indirect Address (Bank)" },
+	{ 0x4338, "A2A3L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4339, "A2A3H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x433A, "NTLR3", "HDMA Line Counter" },
+
+	{ 0x4340, "DMAP4", "(H)DMA Control" },
+	{ 0x4341, "BBAD4", "(H)DMA B-Bus Address" },
+	{ 0x4342, "A1T4L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4343, "A1T4H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4344, "A1B4", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4345, "DAS4L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4346, "DAS4H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4347, "DAS4B", "HDMA Indirect Address (Bank)" },
+	{ 0x4348, "A2A4L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4349, "A2A4H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x434A, "NTLR4", "HDMA Line Counter" },
+
+	{ 0x4350, "DMAP5", "(H)DMA Control" },
+	{ 0x4351, "BBAD5", "(H)DMA B-Bus Address" },
+	{ 0x4352, "A1T5L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4353, "A1T5H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4354, "A1B5", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4355, "DAS5L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4356, "DAS5H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4357, "DAS5B", "HDMA Indirect Address (Bank)" },
+	{ 0x4358, "A2A5L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4359, "A2A5H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x435A, "NTLR5", "HDMA Line Counter" },
+
+	{ 0x4360, "DMAP6", "(H)DMA Control" },
+	{ 0x4361, "BBAD6", "(H)DMA B-Bus Address" },
+	{ 0x4362, "A1T6L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4363, "A1T6H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4364, "A1B6", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4365, "DAS6L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4366, "DAS6H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4367, "DAS6B", "HDMA Indirect Address (Bank)" },
+	{ 0x4368, "A2A6L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4369, "A2A6H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x436A, "NTLR6", "HDMA Line Counter" },
+
+	{ 0x4370, "DMAP7", "(H)DMA Control" },
+	{ 0x4371, "BBAD7", "(H)DMA B-Bus Address" },
+	{ 0x4372, "A1T7L", "DMA A-Bus Address / HDMA Table Address (Low)" },
+	{ 0x4373, "A1T7H", "DMA A-Bus Address / HDMA Table Address (High)" },
+	{ 0x4374, "A1B7", "DMA A-Bus Address / HDMA Table Address (Bank)" },
+	{ 0x4375, "DAS7L", "DMA Size / HDMA Indirect Address (Low)" },
+	{ 0x4376, "DAS7H", "DMA Size / HDMA Indirect Address (High)" },
+	{ 0x4377, "DAS7B", "HDMA Indirect Address (Bank)" },
+	{ 0x4378, "A2A7L", "HDMA Mid Frame Table Address (Low)" },
+	{ 0x4379, "A2A7H", "HDMA Mid Frame Table Address (High)" },
+	{ 0x437A, "NTLR7", "HDMA Line Counter" },
+
+};
 
 static int32_t GetHeaderScore(linput_t* li, uint32_t addr, uint32_t _prgRomSize) {
 	//Try to figure out where the header is by using a scoring system
@@ -434,9 +642,11 @@ static void RegisterHandlers(const uint8_t* _prgRom, const SnesCartInformation& 
 	else if (_flags & CartFlags::HiRom) {
 		mirrors.clear();
 		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x00, 0x3F, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
-		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x40, 0x7D, 0x0000, 0xFFFF, 0, 0, handlersSize, mirrors);
 		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x80, 0xBF, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
+
+		mirrors.clear();
 		RegisterHandlerPrg(_prgRom, _prgRomSize, 0xC0, 0xFF, 0x0000, 0xFFFF, 0, 0, handlersSize, mirrors);
+		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x40, 0x7D, 0x0000, 0xFFFF, 0, 0, handlersSize, mirrors);
 
 		if (mapSram) {
 			mirrors.clear();
@@ -509,6 +719,25 @@ static uint32_t CalcHandlersSize(uint32_t _prgRomSize) {
 	}
 
 	return handlersSize;
+}
+
+static void AddRegsLabels() {
+	for (auto& reg : SNES_REGS) {
+		ea_t ea = std::get<0>(reg);
+		set_name(ea, std::get<1>(reg));
+		set_cmt(ea, std::get<2>(reg), false);
+	}
+}
+
+static void AddZeroPage() {
+	segment_t s;
+	s.start_ea = 0;
+	s.end_ea = 0;
+	s.type = SEG_NULL;
+	s.bitness = 1;
+	s.perm = SEGPERM_READ; // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
+
+	add_segm_ex(&s, "ZERO", nullptr, ADDSEG_NOSREG | ADDSEG_OR_DIE);
 }
 
 static int check_or_load(linput_t* li, bool load) {
@@ -629,6 +858,9 @@ static int check_or_load(linput_t* li, bool load) {
 	RegisterHandlers(_prgRom, _cartInfo, _coprocessorType, _flags, _prgRomSize, _saveRamSize, handlersSize);
 
 	RegisterHandlerWrams();
+
+	AddRegsLabels();
+	AddZeroPage();
 
 	delete[] _prgRom;
 	delete[] _saveRam;
