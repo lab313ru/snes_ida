@@ -183,7 +183,7 @@ bool out_m65816_t::out_operand(const op_t& x) {
     out_word_or_off(x, false);
   } break;
   case M::Bm: { // $00,$00 (opcodes: $44/MVP, $54/MVN)
-    out_byte_or_off(x, false);
+    out_byte_or_off(x, true);
   } break;
   case M::Stk: { // no args
 
@@ -315,6 +315,10 @@ void out_m65816_t::out_insn(void) {
         case M::Abx:
         case M::Aby: {
           qsnprintf(buf, sizeof(buf), COLSTR(" %s Uses Data Bank Reg", SCOLOR_AUTOCMT), ash.cmnt);
+          out_line(buf);
+        } break;
+        case M::Bm: {
+          qsnprintf(buf, sizeof(buf), COLSTR(" %s Src(X),Dst(Y) [ACC.W]", SCOLOR_AUTOCMT), ash.cmnt);
           out_line(buf);
         } break;
         }

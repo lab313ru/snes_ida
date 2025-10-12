@@ -199,11 +199,11 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   } break;
   case M::Bm: { // $00,$00 (opcodes: $44/MVP, $54/MVN)
     insn.Op1.type = o_mem;
-    insn.Op1.value = (opAddr >> 8) & 0xFF;
+    insn.Op1.addr = insn.Op1.value = (opAddr >> 8) & 0xFF;
     insn.Op1.dtype = dt_byte;
 
     insn.Op2.type = o_mem;
-    insn.Op2.value = (opAddr >> 0) & 0xFF;
+    insn.Op2.addr = insn.Op2.value = (opAddr >> 0) & 0xFF;
     insn.Op2.dtype = dt_byte;
     insn.Op2.offb = 2;
   } break;
@@ -231,7 +231,7 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
     if (val & m65816_flags::IndexMode8) {
       ea_set_idx_bitmode(insn.ea, is_zero);
     }
-  } break;
+  } // break;
   default: { // any other instruction
     if (ea_is_manual_bitmode(insn.ea)) {
       break;
