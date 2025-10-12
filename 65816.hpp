@@ -1,6 +1,7 @@
 #pragma once
 
 #include <idaidp.hpp>
+#include <xref.hpp>
 #include "ins.hpp"
 #include <set>
 
@@ -290,8 +291,12 @@ public:
 				} break;
 				}
 			}
-			case o_near:
+			case o_near: {
+				show = true;
+			} break;
 			case o_imm: {
+				s = getseg(0);
+
 				show = true;
 			} break;
 			}
@@ -319,6 +324,7 @@ public:
 				}
 
 				set_op_type(ctx->cur_ea, off_flag(), opnum);
+				plan_ea(ctx->cur_ea);
 			}
 		}
 
@@ -378,6 +384,7 @@ inline void add_op_possible_dref(ea_t addr, const op_t& x, const insn_t& insn, b
 	}
 	else {
 		ea_clr_bank(insn.ea);
+		del_dref(insn.ea, addr);
 	}
 }
 
@@ -387,6 +394,9 @@ inline void add_op_cref(ea_t addr, const op_t& x, const insn_t& insn) {
 
 	if (is_mapped(ea)) {
 		insn.add_cref(ea, x.offb, is_call ? fl_CN : fl_JN);
+	}
+	else {
+		del_cref(insn.ea, ea, true);
 	}
 }
 
