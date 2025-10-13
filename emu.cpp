@@ -28,7 +28,7 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
     case M::Alx: // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
     case M::Absd: // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
     case M::Abld: { // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
-      add_op_possible_dref(x.addr, x, insn, true);
+      add_op_possible_dref(x.addr, x, insn, read_access);
     } break;
     }
   } break;
@@ -52,10 +52,10 @@ int m65816_t::emu(const insn_t& insn) {
     handle_operand(insn.Op2, true, insn);
   }
   if (feature & CF_CHG1) {
-    handle_operand(insn.Op1, 0, insn);
+    handle_operand(insn.Op1, false, insn);
   }
   if (feature & CF_CHG2) {
-    handle_operand(insn.Op2, 0, insn);
+    handle_operand(insn.Op2, false, insn);
   }
 
   if ((feature & CF_STOP) == 0) {

@@ -5,10 +5,10 @@ class out_m65816_t : public outctx_t {
   m65816_t& pm() { return *static_cast<m65816_t*>(procmod); }
 public:
   void out_byte_word(const op_t& x, bool is_byte);
-  void out_byte_or_off(const op_t& x, bool can_be_imm);
-  void out_byteword_or_off(const op_t& x, bool can_be_imm);
-  void out_word_or_off(const op_t& x, bool can_be_imm);
-  void out_24bit_or_off(const op_t& x, bool can_be_imm);
+  void out_byte_or_off(const op_t& x, bool ref_anyway);
+  void out_byteword_or_off(const op_t& x, bool ref_anyway);
+  void out_word_or_off(const op_t& x, bool ref_anyway);
+  void out_24bit_or_off(const op_t& x, bool ref_anyway);
   bool out_operand(const op_t& x);
   void out_insn(void);
   void out_proc_mnem(void);
@@ -21,46 +21,49 @@ void out_m65816_t::out_byte_word(const op_t& x, bool is_byte) {
   out_value(x, is_byte ? OOFW_8 : OOFW_16);
 }
 
-void out_m65816_t::out_byte_or_off(const op_t& x, bool can_be_imm) {
-  if (can_be_imm && !op_adds_xrefs(F, x.n)) {
+void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
+  if (ref_anyway || op_adds_xrefs(F, x.n)) {
+    out_name_expr(x, use_mapping(x.addr));
+  }
+  else {
     out_byte_word(x, true);
   }
-  else {
-    out_name_expr(x, use_mapping(x.addr));
-  }
 }
 
-void out_m65816_t::out_byteword_or_off(const op_t& x, bool can_be_imm) {
+void out_m65816_t::out_byteword_or_off(const op_t& x, bool ref_anyway) {
   bool is_byte = (insn.size == 2);
 
-  if (can_be_imm && !op_adds_xrefs(F, x.n)) {
+  if (ref_anyway || op_adds_xrefs(F, x.n)) {
+    out_name_expr(x, use_mapping(x.addr));
+  }
+  else {
     out_byte_word(x, is_byte);
   }
-  else {
-    out_name_expr(x, use_mapping(x.addr));
-  }
 }
 
-void out_m65816_t::out_word_or_off(const op_t& x, bool can_be_imm) {
-  if (can_be_imm && !op_adds_xrefs(F, x.n)) {
+void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
+  if (ref_anyway || op_adds_xrefs(F, x.n)) {
+    out_name_expr(x, use_mapping(x.addr));
+  }
+  else {
     out_byte_word(x, false);
   }
-  else {
-    out_name_expr(x, use_mapping(x.addr));
-  }
 }
 
-void out_m65816_t::out_24bit_or_off(const op_t& x, bool can_be_imm) {
-  if (can_be_imm && !op_adds_xrefs(F, x.n)) {
-    out_value(x, OOFW_24);
+void out_m65816_t::out_24bit_or_off(const op_t& x, bool ref_anyway) {
+  if (ref_anyway || op_adds_xrefs(F, x.n)) {
+    out_name_expr(x, use_mapping(x.addr));
   }
   else {
-    out_name_expr(x, use_mapping(x.addr));
+    out_value(x, OOFW_24);
   }
 }
 
 bool out_m65816_t::out_operand(const op_t& x) {
   M addrMode = static_cast<M>(insn.insnpref);
+
+  uint32_t feature = insn.get_canon_feature(ph);
+  bool read_access = ((x.n == 0) && !(feature & CF_CHG1)) || ((x.n == 1) && !(feature & CF_CHG2));
 
   switch (addrMode) {
   case M::Im8: // #$00 - one byte (opcodes: $E2/SEP, $C2/REP, $42/WDM, $02/COP, $00/BRK)
@@ -72,66 +75,66 @@ bool out_m65816_t::out_operand(const op_t& x) {
       out_byte_word(x, true);
     }
     else {
-      out_byteword_or_off(x, true);
+      out_byteword_or_off(x, false);
     }
   } break;
   case M::Sr: { // $00,S - by stack (opcodes: $E3/SBC, $C3/CMP, $A3/LDA, $83/STA, $63/ADC, $43/EOR, $23/AND, $03/ORA)
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(',');
     out_register("S");
   } break;
   case M::Dp: { // $00 - direct page reg (opcodes: $E4/CPX, $C4/CPY, $A4/LDY, $84/STY, $64/STZ, $24/BIT, $14/TRB, $04/TSB, $E5/SBC, $C5/CMP, $A5/LDA, $85/STA, $65/ADC, $45/EOR, $25/AND, $05/ORA, $E6/INC, $C6/DEC, $A6/LDX, $86/STX, $66/ROR, $46/LSR, $26/ROL, $06/ASL)
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
   } break;
   case M::Dps: { // ($00) - by stack, direct page reg (opcodes: $D4/PEI)
     out_symbol('(');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(')');
   } break;
   case M::Dpx: { // $00,X - direct page reg
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(',');
     out_register("X");
   } break;
   case M::Dpy: { // $00,Y - direct page reg (opcodes: $B6/LDX, $96/STX)
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(',');
     out_register("Y");
   } break;
   case M::Idp: { // ($00) - direct page reg
     out_symbol('(');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(')');
   } break;
   case M::Idx: { // ($00,X) - direct page reg
     out_symbol('(');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(',');
     out_register("X");
     out_symbol(')');
   } break;
   case M::Idy: { // ($00),Y - direct page reg
     out_symbol('(');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(')');
     out_symbol(',');
     out_register("Y");
   } break;
   case M::Idl: { // [$00] - direct page reg
     out_symbol('[');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(']');
   } break;
   case M::Idly: { // [$00],Y - direct page reg (opcodes: $F7/SBC, $D7/CMP, $B7/LDA, $97/STA, $77/ADC, $57/EOR, $37/AND, $17/ORA, $07/ORA)
     out_symbol('[');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(']');
     out_symbol(',');
     out_register("Y");
   } break;
   case M::Isy: { // ($00,S),Y - by stack (opcodes: $F3/SBC, $D3/CMP, $B3/LDA, $93/STA, $73/ADC, $53/EOR, $33/AND, $13/ORA, $03/ORA)
     out_symbol('(');
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
     out_symbol(',');
     out_register("S");
     out_symbol(')');
@@ -139,51 +142,51 @@ bool out_m65816_t::out_operand(const op_t& x) {
     out_register("Y");
   } break;
   case M::Absd: { // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
   } break;
   case M::Absp: { // $0000 - Uses Program bank for jumps (opcodes: $4C/JMP, $20/JSR)
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
   } break;
   case M::Abx: // $0000,X - Uses Data bank (opcodes: $BC/LDY, $3C/BIT, $FD/SBC, $DD/CMP, $BD/LDA, $9D/STA, $7D/ADC, $5D/EOR, $3D/AND, $1D/ORA, $FE/INC, $DE/DEC, $9E/STZ, $7E/ROR, $5E/LSR, $3E/ROL, $1E/ASL)
   case M::Aby: { // $0000,Y - Uses Data bank (opcodes: $BE/LDX, $F9/SBC, $D9/CMP, $B9/LDA, $99/STA, $79/ADC, $59/EOR, $39/AND, $19/ORA)
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
     out_symbol(',');
     out_register((addrMode == M::Abx) ? "X" : "Y");
   } break;
   case M::Ablp: { // $000000 - absolute jump (opcodes: $5C/JML-JMP, $22/JSL)
-    out_24bit_or_off(x, false);
+    out_24bit_or_off(x, read_access);
   } break;
   case M::Abld: { // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
-    out_24bit_or_off(x, false);
+    out_24bit_or_off(x, read_access);
   } break;
   case M::Alx: { // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
-    out_24bit_or_off(x, false);
+    out_24bit_or_off(x, read_access);
     out_symbol(',');
     out_register("X");
   } break;
   case M::Ind: { // ($0000) - Uses Program bank (opcodes: $6C/JMP)
     out_symbol('(');
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
     out_symbol(')');
   } break;
   case M::Iax: { // ($0000,X) - uses Program bank (opcodes: $FC/JSR, $7C/JMP)
     out_symbol('(');
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
     out_symbol(',');
     out_register("X");
     out_symbol(')');
   } break;
   case M::Ial: { // [$000000] - absolute (opcodes: $DC/JML-JMP)
     out_symbol('[');
-    out_24bit_or_off(x, false);
+    out_24bit_or_off(x, read_access);
     out_symbol(']');
   } break;
   case M::Rel: // $0000 (8 bits PC-relative) (opcodes: $F0/BEQ, $D0/BNE, $B0/BCS, $90/BCC, $80/BRA, $70/BVS, $50/BVC, $30/BMI, $10/BPL)
   case M::Rell: { // $0000 (16 bits PC-relative) (opcodes: $82/BRL, $62/PER)
-    out_word_or_off(x, false);
+    out_word_or_off(x, read_access);
   } break;
   case M::Bm: { // $00,$00 (opcodes: $44/MVP, $54/MVN)
-    out_byte_or_off(x, true);
+    out_byte_or_off(x, false);
   } break;
   case M::Stk: { // no args
 
