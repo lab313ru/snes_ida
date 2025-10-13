@@ -450,26 +450,27 @@ static void EnsureValidPrgRomSize(uint32_t& size, uint8_t*& rom) {
 	}
 }
 
-static void create_segm(uint32_t bank, uint32_t startAddr, uint32_t endAddr, const char* seg_name, uchar seg_type, const char* seg_class, uchar seg_perm, eavec_t &mirrors, int mirror_idx) {
+static inline ea_t calc_start_addr(uint32_t bank, uint32_t startAddr) {
+	return (ea_t)((bank << 16) + startAddr);
+}
+
+static inline ea_t calc_end_addr(uint32_t bank, uint32_t endAddr) {
+	return (ea_t)((bank << 16) + endAddr + 1);
+}
+
+static void create_segm(uint32_t bank, uint32_t startAddr, uint32_t endAddr, const char* seg_name, uchar seg_type, const char* seg_class, uchar seg_perm) {
 	segment_t s;
-	s.start_ea = (ea_t)((bank << 16) + startAddr);
-	s.end_ea = (ea_t)((bank << 16) + endAddr + 1);
+	s.start_ea = calc_start_addr(bank, startAddr);
+	s.end_ea = calc_end_addr(bank, endAddr);
 	s.type = seg_type;
 	s.bitness = 1;
 	s.perm = seg_perm; // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
 
-	if (mirror_idx == -1) {
-		add_segm_ex(&s, seg_name, seg_class, ADDSEG_NOSREG | ADDSEG_OR_DIE);
-		set_default_sreg_value(&s, m65816_regs::rVds, s.start_ea);
-
-		mirrors.push_back(s.start_ea);
-	}
-	else {
-		add_mapping(s.start_ea, mirrors[mirror_idx % mirrors.size()], s.end_ea - s.start_ea);
-	}
+	add_segm_ex(&s, seg_name, seg_class, ADDSEG_NOSREG | ADDSEG_OR_DIE);
+	set_default_sreg_value(&s, m65816_regs::rVds, s.start_ea);
 }
 
-static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, uint16_t pageIncrement, uint16_t startPageNumber, uint32_t handlersSize, eavec_t& mirrors) {
+static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, uint16_t pageIncrement, uint16_t startPageNumber, uint32_t handlersSize, std::map<uint32_t, ea_t>& mirrors) {
 	if ((startAddr & 0xFFF) != 0 || (endAddr & 0xFFF) != 0xFFF || startBank > endBank || startAddr > endAddr) {
 		loader_failure("invalid start/end address\n");
 	}
@@ -479,17 +480,16 @@ static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uin
 
 	bool no_mirrors = mirrors.empty();
 	uint32_t bank;
-	int idx;
 
-	for (bank = startBank, idx = 0; bank <= endBank; bank++, idx++) {
+	for (bank = startBank; bank <= endBank; bank++) {
 		pageNumber += pageIncrement;
 
 		uint32_t romOffset = pageNumber * 0x1000;
 
-		if (romOffset < _prgRomSize) {
+		if (no_mirrors && romOffset < _prgRomSize) {
 			char bank_name[16];
 			qsnprintf(bank_name, sizeof(bank_name), BANK_PREFIX "%02X", bank);
-			create_segm(bank, startAddr, endAddr, bank_name, SEG_CODE, "CODE", SEGPERM_EXEC | SEGPERM_READ, mirrors, no_mirrors ? -1 : idx);
+			create_segm(bank, startAddr, endAddr, bank_name, SEG_CODE, "CODE", SEGPERM_EXEC | SEGPERM_READ);
 		}
 
 		for (uint32_t j = startAddr; j <= endAddr; j += 0x1000) {
@@ -500,7 +500,11 @@ static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uin
 				ea_t end_ea = start_ea + 0x1000;
 
 				if (no_mirrors) {
+					mirrors.emplace(pageNumber, start_ea);
 					mem2base(&_prgRom[romOffset], start_ea, end_ea, romOffset);
+				}
+				else {
+					add_mapping(start_ea, mirrors[pageNumber], end_ea - start_ea);
 				}
 			}
 
@@ -513,54 +517,81 @@ static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uin
 	}
 }
 
-static void RegisterHandlerSram(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, eavec_t &mirrors) {
+static void RegisterHandlerSram(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, std::map<uint32_t, ea_t>& mirrors) {
 	if ((startAddr & 0xFFF) != 0 || (endAddr & 0xFFF) != 0xFFF || startBank > endBank || startAddr > endAddr) {
 		loader_failure("invalid start/end address\n");
 	}
 
 	bool no_mirrors = mirrors.empty();
 	uint32_t bank;
-	int idx;
+	uint32_t pageNumber;
 
-	for (bank = startBank, idx = 0; bank <= endBank; bank++, idx++) {
-		char bank_name[16];
-		qsnprintf(bank_name, sizeof(bank_name), "SRAM%02X", bank);
+	for (bank = startBank, pageNumber = 0; bank <= endBank; bank++, pageNumber++) {
+		ea_t start_ea = calc_start_addr(bank, startAddr);
+		ea_t end_ea = calc_end_addr(bank, endAddr);
 
-		create_segm(bank, startAddr, endAddr, bank_name, SEG_DATA, "DATA", SEGPERM_READ | SEGPERM_WRITE, mirrors, no_mirrors ? -1 : idx);
+		if (no_mirrors) {
+			char bank_name[16];
+			qsnprintf(bank_name, sizeof(bank_name), "SRAM%02X", bank);
+
+			create_segm(bank, startAddr, endAddr, bank_name, SEG_DATA, "DATA", SEGPERM_READ | SEGPERM_WRITE);
+			mirrors.emplace(pageNumber, start_ea);
+		}
+		else {
+			add_mapping(start_ea, mirrors[pageNumber], end_ea - start_ea);
+		}
 	}
 }
 
-static void RegisterHandlerWram(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, eavec_t &mirrors) {
+static void RegisterHandlerWram(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, std::map<uint32_t, ea_t>& mirrors) {
 	if ((startAddr & 0xFFF) != 0 || (endAddr & 0xFFF) != 0xFFF || startBank > endBank || startAddr > endAddr) {
 		loader_failure("invalid start/end address\n");
 	}
 
 	bool no_mirrors = mirrors.empty();
 	uint32_t bank;
-	int idx;
+	uint32_t pageNumber;
 
-	for (bank = startBank, idx = 0; bank <= endBank; bank++, idx++) {
-		char bank_name[16];
-		qsnprintf(bank_name, sizeof(bank_name), "WRAM%02X", bank);
+	for (bank = startBank, pageNumber = 0; bank <= endBank; bank++, pageNumber++) {
+		ea_t start_ea = calc_start_addr(bank, startAddr);
+		ea_t end_ea = calc_end_addr(bank, endAddr);
 
-		create_segm(bank, startAddr, endAddr, bank_name, SEG_DATA, "DATA", SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC, mirrors, no_mirrors ? -1 : idx);
+		if (no_mirrors) {
+			char bank_name[16];
+			qsnprintf(bank_name, sizeof(bank_name), "WRAM%02X", bank);
+
+			create_segm(bank, startAddr, endAddr, bank_name, SEG_DATA, "DATA", SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC);
+			mirrors.emplace(pageNumber, start_ea);
+		}
+		else {
+			add_mapping(start_ea, mirrors[pageNumber], end_ea - start_ea);
+		}
 	}
 }
 
-static void RegisterHandlerRegs(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, const char* regsName, eavec_t &mirrors) {
+static void RegisterHandlerRegs(uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, const char* regsName, std::map<uint32_t, ea_t>& mirrors) {
 	if ((startAddr & 0xFFF) != 0 || (endAddr & 0xFFF) != 0xFFF || startBank > endBank || startAddr > endAddr) {
 		loader_failure("invalid start/end address\n");
 	}
 
 	bool no_mirrors = mirrors.empty();
 	uint32_t bank;
-	int idx;
+	uint32_t pageNumber;
 
-	for (bank = startBank, idx = 0; bank <= endBank; bank++, idx++) {
-		char bank_name[16];
-		qsnprintf(bank_name, sizeof(bank_name), "%s%02X", regsName, bank);
+	for (bank = startBank, pageNumber = 0; bank <= endBank; bank++, pageNumber++) {
+		ea_t start_ea = calc_start_addr(bank, startAddr);
+		ea_t end_ea = calc_end_addr(bank, endAddr);
 
-		create_segm(bank, startAddr, endAddr, bank_name, SEG_XTRN, "XTRN", SEGPERM_READ | SEGPERM_WRITE, mirrors, no_mirrors ? -1 : idx);
+		if (no_mirrors) {
+			char bank_name[16];
+			qsnprintf(bank_name, sizeof(bank_name), "%s%02X", regsName, bank);
+
+			create_segm(bank, startAddr, endAddr, bank_name, SEG_XTRN, "XTRN", SEGPERM_READ | SEGPERM_WRITE);
+			mirrors.emplace(pageNumber, start_ea);
+		}
+		else {
+			add_mapping(start_ea, mirrors[pageNumber], end_ea - start_ea);
+		}
 	}
 }
 
@@ -568,7 +599,7 @@ static bool MapSpecificCarts(const uint8_t* _prgRom, uint32_t _prgRomSize, const
 	std::string name = GetCartName(_cartInfo);
 	std::string code = GetGameCode(_cartInfo);
 
-	eavec_t mirrors = {};
+	std::map<uint32_t, ea_t> mirrors = {};
 
 	//if (_sufamiTurbo) {
 	//	_sufamiTurbo->InitializeMappings(mm, _prgRomHandlers, _saveRamHandlers);
@@ -617,7 +648,7 @@ static void RegisterHandlers(const uint8_t* _prgRom, const SnesCartInformation& 
 
 	bool mapSram = _coprocessorType != CoprocessorType::SA1;
 
-	eavec_t mirrors = {};
+	std::map<uint32_t, ea_t> mirrors = {};
 
 	if (_flags & CartFlags::LoRom) {
 		mirrors.clear();
@@ -641,12 +672,10 @@ static void RegisterHandlers(const uint8_t* _prgRom, const SnesCartInformation& 
 	}
 	else if (_flags & CartFlags::HiRom) {
 		mirrors.clear();
-		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x00, 0x3F, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
-		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x80, 0xBF, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
-
-		mirrors.clear();
 		RegisterHandlerPrg(_prgRom, _prgRomSize, 0xC0, 0xFF, 0x0000, 0xFFFF, 0, 0, handlersSize, mirrors);
 		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x40, 0x7D, 0x0000, 0xFFFF, 0, 0, handlersSize, mirrors);
+		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x00, 0x3F, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
+		RegisterHandlerPrg(_prgRom, _prgRomSize, 0x80, 0xBF, 0x8000, 0xFFFF, 8, 0, handlersSize, mirrors);
 
 		if (mapSram) {
 			mirrors.clear();
@@ -680,7 +709,8 @@ static void RegisterHandlers(const uint8_t* _prgRom, const SnesCartInformation& 
 }
 
 static void RegisterHandlerWrams() {
-	eavec_t mirrors;
+	std::map<uint32_t, ea_t> mirrors = {};
+
 	RegisterHandlerWram(0x7E, 0x7F, 0x0000, 0xFFFF, mirrors);
 	RegisterHandlerWram(0x00, 0x3F, 0x0000, 0x0FFF, mirrors);
 	RegisterHandlerWram(0x80, 0xBF, 0x0000, 0x0FFF, mirrors);
@@ -886,7 +916,7 @@ void idaapi load_file(linput_t* li, ushort neflags, const char* fileformatname) 
 	inf_set_app_bitness(32);
 
 	inf_set_af(0
-		| AF_FIXUP //        0x0001          // Create offsets and segments using fixup info
+		//| AF_FIXUP //        0x0001          // Create offsets and segments using fixup info
 		//| AF_MARKCODE  //     0x0002          // Mark typical code sequences as code
 		| AF_UNK //          0x0004          // Delete instructions with no xrefs
 		| AF_CODE //         0x0008          // Trace execution flow
@@ -899,15 +929,15 @@ void idaapi load_file(linput_t* li, ushort neflags, const char* fileformatname) 
 		//| AF_LVAR //         0x0400          // Create stack variables
 		//| AF_TRACE //        0x0800          // Trace stack pointer
 		//| AF_ASCII //        0x1000          // Create ascii string if data xref exists
-		| AF_IMMOFF //       0x2000          // Convert 32bit instruction operand to offset
+		//| AF_IMMOFF //       0x2000          // Convert 32bit instruction operand to offset
 		//AF_DREFOFF //      0x4000          // Create offset if data xref to seg32 exists
-		| AF_FINAL //       0x8000          // Final pass of analysis
+		//| AF_FINAL //       0x8000          // Final pass of analysis
 		| AF_JUMPTBL  //    0x0001          // Locate and create jump tables
 		| AF_STKARG  //     0x0008          // Propagate stack argument information
 		| AF_REGARG  //     0x0010          // Propagate register argument information
 		| AF_SIGMLT  //     0x0080          // Allow recognition of several copies of the same function
 		//| AF_FTAIL  //      0x0100          // Create function tails
-		| AF_DATOFF  //     0x0200          // Automatically convert data to offsets
+		//| AF_DATOFF  //     0x0200          // Automatically convert data to offsets
 		//| AF_TRFUNC  //     0x2000          // Truncate functions upon code deletion
 		//| AF_PURDAT  //     0x4000          // Control flow to data segment is ignored
 	);
@@ -915,8 +945,10 @@ void idaapi load_file(linput_t* li, ushort neflags, const char* fileformatname) 
 
 	int res = check_or_load(li, true);
 
-	uint32_t reset_vector = get_16bit(0xFFFC);
-	set_name(reset_vector, "start", SN_PUBLIC);
+	ea_t ea = use_mapping(0xFFFC);
+	uint32_t reset_vector = get_16bit(ea);
+	reset_vector = use_mapping(reset_vector);
+	set_name(reset_vector, "vector_reset", SN_PUBLIC);
 	auto_make_proc(reset_vector);
 
 	jumpto(reset_vector);
