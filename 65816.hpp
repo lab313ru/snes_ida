@@ -368,6 +368,8 @@ struct m65816_t : public procmod_t {
 #define ROM_NO_WDM 0x04
 	ushort idpflags = ROM_NO_BRK | ROM_NO_COP | ROM_NO_WDM;
 
+	int addr24_id, addr24_fid;
+
 	switch_bitmode_action_t switch_bitmode;
 	set_cur_offset_bank_action_t set_cur_offset_bank;
 	set_sel_offset_bank_action_t set_sel_offset_bank;

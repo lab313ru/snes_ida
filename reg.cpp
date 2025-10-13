@@ -75,6 +75,75 @@ const char* idaapi m65816_t::set_idp_options(const char* keyword, int value_type
   }
 }
 
+static const char addr24_t_string[] = "addr24_t";
+
+static uint32_t addr24_value = 0;
+
+static const data_type_t addr24_type = {
+  sizeof(data_type_t), // size of this struct
+  &addr24_value, // user defined data
+  DTP_NODUP, // properties
+  addr24_t_string, // internal name of the data type
+  "24-bit address", // menu name. If nullptr, the type won't be visible in the Edit menu
+  "3", // hotkey
+  "d24", // keyword to use in the assembly listing
+  3, // value size
+  nullptr, // may_create_at? nullptr means the type can be created anywhere
+  nullptr, // calc exact size for varsize
+};
+
+/// Convert to colored string
+/// \param ud           user-defined data
+/// \param out          output buffer. may be nullptr
+/// \param value        value to print. may not be nullptr
+/// \param size         size of value in 8-bit bytes
+/// \param current_ea   current address (BADADDR if unknown)
+/// \param operand_num  current operand number
+/// \param dtid         custom data type id (0-standard built-in data type)
+static bool idaapi print_addr24(void* ud, qstring* out, const void* value, asize_t, ea_t current_ea, int operand_num, int) {
+  if (out != nullptr) {
+    const uint8_t* b3 = (const uint8_t*)value;
+    uint32_t* _ud = (uint32_t*)ud;
+
+    uint32_t val = (b3[2] << 16) | (b3[1] << 8) | (b3[0] << 0);
+    val = use_mapping(val);
+    *_ud = val;
+
+    qstring name;
+    ssize_t ln = get_name_expr(&name, current_ea, operand_num, val, BADADDR);
+    if (ln <= 0) {
+      out->cat_sprnt("$%06X", val);
+    }
+    else {
+      out->cat_sprnt("%s", name.c_str());
+    }
+  }
+
+  return true;
+}
+
+static void idaapi analyze_addr24(void* ud, ea_t current_ea, int operand_num) {
+  if (current_ea != BADADDR) {
+    current_ea = get_item_head(current_ea);
+    uint32_t* _ud = (uint32_t*)ud;
+    add_dref(current_ea, *_ud, dr_O);
+  }
+}
+
+static const data_format_t addr24_format = {
+  sizeof(data_format_t), // size of this struct
+  &addr24_value, // user defined data
+  0, // properties
+  addr24_t_string, // internal name of the data format
+  nullptr, // menu name. If nullptr, the type won't be visible in the Edit menu
+  nullptr, // hotkey
+  3, // value size
+  0, // text width of the value
+  print_addr24, // callback to render colored text for the data
+  nullptr, // scan
+  analyze_addr24, // analyze
+};
+
 ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
   int retcode = 1;
 
@@ -123,6 +192,10 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     register_action(set_wram_offset_bank_action);
     register_action(set_zero_offset_bank_action);
 
+    addr24_id = register_custom_data_type(&addr24_type);
+    addr24_fid = register_custom_data_format(&addr24_format);
+    attach_custom_data_format(addr24_id, addr24_fid);
+
     //hook_event_listener(HT_IDB, &idb_listener, &LPH);
 
     recurse_ana = false;
@@ -139,6 +212,14 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     update_action_state("OpOffset", action_state_t::AST_ENABLE_ALWAYS);
     update_action_state("OpOffsetCs", action_state_t::AST_ENABLE_ALWAYS);
     update_action_state("OpenXrefsTree", action_state_t::AST_ENABLE_ALWAYS);
+
+    if (addr24_id > 0) {
+      unregister_custom_data_type(addr24_id);
+    }
+
+    if (addr24_fid > 0) {
+      unregister_custom_data_format(addr24_fid);
+    }
 
     //unhook_event_listener(HT_IDB, &idb_listener);
   } break;
@@ -310,7 +391,7 @@ static const bytes_t retcodes[] = {
 processor_t LPH = {
   IDP_INTERFACE_VERSION,
   PLFM_65C816, // 0x8000 + 889, // proc ID
-  PRN_HEX | PR_BINMEM | PR_NO_SEGMOVE | PR_CNDINSNS, // flags
+  PRN_HEX | PR_BINMEM | PR_NO_SEGMOVE | PR_CNDINSNS | PR_USE_TBYTE, // flags
   PR2_MAPPINGS | PR2_IDP_OPTS, // flags2
   8, 8, // bits in a byte (code/data)
   shnames, // short processor names
