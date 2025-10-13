@@ -84,7 +84,7 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     inf_set_gen_lzero(true); // we want to align every hex-value with zeroes
 
     inf_set_af(0
-      | AF_FIXUP //        0x0001          // Create offsets and segments using fixup info
+      //| AF_FIXUP //        0x0001          // Create offsets and segments using fixup info
       //| AF_MARKCODE  //     0x0002          // Mark typical code sequences as code
       | AF_UNK //          0x0004          // Delete instructions with no xrefs
       | AF_CODE //         0x0008          // Trace execution flow
@@ -97,15 +97,15 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
       //| AF_LVAR //         0x0400          // Create stack variables
       //| AF_TRACE //        0x0800          // Trace stack pointer
       //| AF_ASCII //        0x1000          // Create ascii string if data xref exists
-      | AF_IMMOFF //       0x2000          // Convert 32bit instruction operand to offset
+      //| AF_IMMOFF //       0x2000          // Convert 32bit instruction operand to offset
       //AF_DREFOFF //      0x4000          // Create offset if data xref to seg32 exists
-      | AF_FINAL //       0x8000          // Final pass of analysis
+      //| AF_FINAL //       0x8000          // Final pass of analysis
       | AF_JUMPTBL  //    0x0001          // Locate and create jump tables
       | AF_STKARG  //     0x0008          // Propagate stack argument information
       | AF_REGARG  //     0x0010          // Propagate register argument information
       | AF_SIGMLT  //     0x0080          // Allow recognition of several copies of the same function
       //| AF_FTAIL  //      0x0100          // Create function tails
-      | AF_DATOFF  //     0x0200          // Automatically convert data to offsets
+      //| AF_DATOFF  //     0x0200          // Automatically convert data to offsets
       //| AF_TRFUNC  //     0x2000          // Truncate functions upon code deletion
       //| AF_PURDAT  //     0x4000          // Control flow to data segment is ignored
     );
@@ -120,6 +120,8 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     register_action(switch_bitmode_action);
     register_action(set_cur_offset_bank_action);
     register_action(set_sel_offset_bank_action);
+    register_action(set_wram_offset_bank_action);
+    register_action(set_zero_offset_bank_action);
 
     //hook_event_listener(HT_IDB, &idb_listener, &LPH);
 
@@ -131,6 +133,8 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     unregister_action(switch_bitmode_action_name);
     unregister_action(set_cur_offset_bank_action_name);
     unregister_action(set_sel_offset_bank_action_name);
+    unregister_action(set_wram_offset_bank_action_name);
+    unregister_action(set_zero_offset_bank_action_name);
 
     update_action_state("OpOffset", action_state_t::AST_ENABLE_ALWAYS);
     update_action_state("OpOffsetCs", action_state_t::AST_ENABLE_ALWAYS);

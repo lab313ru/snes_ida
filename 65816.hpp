@@ -119,6 +119,8 @@ enum m65816_flags : uint8_t {
 static const char  switch_bitmode_action_name[] = "65816:switch_bitmode";
 static const char set_cur_offset_bank_action_name[] = "65816:set_cur_offset_bank";
 static const char set_sel_offset_bank_action_name[] = "65816:set_sel_offset_bank";
+static const char set_wram_offset_bank_action_name[] = "65816:set_wram_offset_bank";
+static const char set_zero_offset_bank_action_name[] = "65816:set_zero_offset_bank";
 
 extern netnode helper;
 extern bool can_change_mem_mode(ea_t ea);
@@ -156,26 +158,32 @@ inline uint8_t ea_get_flags(ea_t ea) {
 	return res;
 }
 
-inline void ea_set_mem_bitmode(ea_t ea, bool clear) {
+inline uint8_t ea_set_mem_bitmode(ea_t ea, bool clear) {
 	uint8_t prev = ea_get_flags(ea);
 
 	if (clear) {
-		helper.charset_ea(ea, (prev & ~m65816_flags::MemoryMode8), FLAGS_BITMODE_TAG);
+		prev &= ~m65816_flags::MemoryMode8;
 	}
 	else {
-		helper.charset_ea(ea, (prev | m65816_flags::MemoryMode8), FLAGS_BITMODE_TAG);
+		prev |= m65816_flags::MemoryMode8;
 	}
+
+	helper.charset_ea(ea, prev, FLAGS_BITMODE_TAG);
+	return prev;
 }
 
-inline void ea_set_idx_bitmode(ea_t ea, bool clear) {
+inline uint8_t ea_set_idx_bitmode(ea_t ea, bool clear) {
 	uint8_t prev = ea_get_flags(ea);
 
 	if (clear) {
-		helper.charset_ea(ea, (prev & ~m65816_flags::IndexMode8), FLAGS_BITMODE_TAG);
+		prev &= ~m65816_flags::IndexMode8;
 	}
 	else {
-		helper.charset_ea(ea, (prev | m65816_flags::IndexMode8), FLAGS_BITMODE_TAG);
+		prev |= m65816_flags::IndexMode8;
 	}
+
+	helper.charset_ea(ea, prev, FLAGS_BITMODE_TAG);
+	return prev;
 }
 
 inline void ea_del_flags(ea_t ea) {
@@ -229,11 +237,18 @@ inline void ea_clr_bank(ea_t ea) {
 // !!! problems TODO:
 // C18A1A (C18A4F)
 
+enum class set_offset_bank_mode_t : uint8_t {
+	SOB_CURRENT,
+	SOB_SELECT,
+	SOB_WRAM,
+	SOB_ZERO,
+};
+
 struct set_offset_bank_action_t : public action_handler_t {
 private:
-	bool _is_current;
+	set_offset_bank_mode_t _mode;
 public:
-	set_offset_bank_action_t(bool is_current) : _is_current(is_current) {}
+	set_offset_bank_action_t(set_offset_bank_mode_t mode) : _mode(mode) {}
 
 	virtual int idaapi activate(action_activation_ctx_t* ctx) {
 		ea_clr_bank(ctx->cur_ea);
@@ -246,86 +261,81 @@ public:
 
 		insn_t insn;
 
-		bool show = false;
 		ea_t op_addr = 0;
-		segment_t* s = nullptr;
+		segment_t* seg = nullptr;
 
-		if (is_data(get_flags32(ctx->cur_ea)) || !decode_insn(&insn, ctx->cur_ea)) {
-			show = true;
-		}
-		else {
-			op_t op = insn.ops[opnum];
-			op_addr = op.addr;
+		if (is_code(get_flags(ctx->cur_ea)) && decode_insn(&insn, ctx->cur_ea)) {
+			M addrMode = static_cast<M>(insn.insnpref);
 
-			switch (op.type) {
-			case o_displ: {
-				M addrMode = static_cast<M>(insn.insnpref);
-
-				switch (addrMode) {
-				case M::Abx:
-				case M::Aby:
-				case M::Dpx:
-				case M::Dpy: 
-				case M::Idy: {
-					show = true;
-				} break;
-				}
-			} break;
-			case o_mem: {
-				M addrMode = static_cast<M>(insn.insnpref);
-
-				switch (addrMode) {
-				case M::Dp:
-				case M::Dpx:
-				case M::Dpy:
-				case M::Idp:
-				case M::Idx:
-				case M::Idy:
-				case M::Idl:
-				case M::Idly: { // Uses Direct Page Reg
-					s = getseg(use_mapping(0)); // by default it points to zero page
-				} break;
-				case M::Abx:
-				case M::Aby: { // Uses Data Bank Reg
-					show = true;
-				} break;
-				}
-			}
-			case o_near: {
-				show = true;
-			} break;
-			case o_imm: {
-				s = getseg(0);
-
-				show = true;
+			switch (addrMode) {
+			case M::Alx: // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
+			case M::Abld: // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
+			case M::Ablp: // $000000 - absolute jump (opcodes: $5C/JML-JMP, $22/JSL)
+			case M::Ial: { // [$000000] - absolute (opcodes: $DC/JML-JMP)
+				_mode = set_offset_bank_mode_t::SOB_ZERO;
 			} break;
 			}
 		}
 
-		if (show) {
-			if (s == nullptr) {
-				s = getseg(ctx->cur_ea);
-			}
+		switch (_mode) {
+		case set_offset_bank_mode_t::SOB_CURRENT: {
+			seg = getseg(ctx->cur_ea);
+		} break;
+		case set_offset_bank_mode_t::SOB_SELECT: {
+			qstring title;
+			title.sprnt("Choose Bank for offset %a at %a", ctx->cur_value, ctx->cur_ea);
 
-			if (s != nullptr) {
-				qstring title;
-				title.sprnt("Choose Bank for offset %a at %a", ctx->cur_value, ctx->cur_ea);
+			seg = getseg(ctx->cur_ea);
+			seg = choose_segm(title.c_str(), seg->start_ea);
+		} break;
+		case set_offset_bank_mode_t::SOB_ZERO: {
+			seg = getseg(0);
+		} break;
+		default: { // WRAM
+			seg = getseg(use_mapping(0)); // by default it points to zero page
+		} break;
+		}
 
-				segment_t* s2 = nullptr;
-				if (!_is_current) {
-					s2 = choose_segm(title.c_str(), s->start_ea);
-				}
+		//if (is_data(get_flags32(ctx->cur_ea)) || !decode_insn(&insn, ctx->cur_ea)) {
+		//	show = true;
+		//}
+		//else {
+		//	op_t op = insn.ops[opnum];
+		//	op_addr = op.addr;
 
-				if (s2 != nullptr) {
-					ea_set_bank(ctx->cur_ea, s2->start_ea);
-				}
-				else {
-					ea_set_bank(ctx->cur_ea, s->start_ea);
-				}
+		//	switch (op.type) {
+		//	case o_mem: {
+		//		M addrMode = static_cast<M>(insn.insnpref);
 
-				set_op_type(ctx->cur_ea, off_flag(), opnum);
-				plan_ea(ctx->cur_ea);
-			}
+		//		switch (addrMode) {
+		//		case M::Dp:
+		//		case M::Dpx:
+		//		case M::Dpy:
+		//		case M::Idp:
+		//		case M::Idx:
+		//		case M::Idy:
+		//		case M::Idl:
+		//		case M::Idly: { // Uses Direct Page Reg
+		//		} break;
+		//		case M::Abx:
+		//		case M::Aby: { // Uses Data Bank Reg
+		//			show = true;
+		//		} break;
+		//		}
+		//	}
+		//	case o_near: {
+		//		show = true;
+		//	} break;
+		//	case o_imm: {
+		//		show = true;
+		//	} break;
+		//	}
+		//}
+
+		if (seg) {
+			ea_set_bank(ctx->cur_ea, seg->start_ea);
+			set_op_type(ctx->cur_ea, off_flag(), opnum);
+			plan_ea(ctx->cur_ea);
 		}
 
 		return 1;
@@ -337,11 +347,19 @@ public:
 };
 
 struct set_cur_offset_bank_action_t : public set_offset_bank_action_t {
-	set_cur_offset_bank_action_t() : set_offset_bank_action_t(true) {}
+	set_cur_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_CURRENT) {}
 };
 
 struct set_sel_offset_bank_action_t : public set_offset_bank_action_t {
-	set_sel_offset_bank_action_t() : set_offset_bank_action_t(false) {}
+	set_sel_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_SELECT) {}
+};
+
+struct set_wram_offset_bank_action_t : public set_offset_bank_action_t {
+	set_wram_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_WRAM) {}
+};
+
+struct set_zero_offset_bank_action_t : public set_offset_bank_action_t {
+	set_zero_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_ZERO) {}
 };
 
 struct m65816_t : public procmod_t {
@@ -353,10 +371,14 @@ struct m65816_t : public procmod_t {
 	switch_bitmode_action_t switch_bitmode;
 	set_cur_offset_bank_action_t set_cur_offset_bank;
 	set_sel_offset_bank_action_t set_sel_offset_bank;
+	set_wram_offset_bank_action_t set_wram_offset_bank;
+	set_zero_offset_bank_action_t set_zero_offset_bank;
 
 	action_desc_t switch_bitmode_action = ACTION_DESC_LITERAL_PROCMOD(switch_bitmode_action_name, "Switch flag", &switch_bitmode, this, "Shift+X", NULL, -1);
 	action_desc_t set_cur_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_cur_offset_bank_action_name, "Change bank to current", &set_cur_offset_bank, this, "O", NULL, -1);
 	action_desc_t set_sel_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_sel_offset_bank_action_name, "Change bank to selected", &set_sel_offset_bank, this, "Ctrl+O", NULL, -1);
+	action_desc_t set_wram_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_wram_offset_bank_action_name, "Change bank to WRAM", &set_wram_offset_bank, this, "Shift+O", NULL, -1);
+	action_desc_t set_zero_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_zero_offset_bank_action_name, "Change bank to ZERO", &set_zero_offset_bank, this, "Ctrl+Shift+O", NULL, -1);
 
 	bool recurse_ana = false;
 	
@@ -374,17 +396,17 @@ struct m65816_t : public procmod_t {
 };
 
 inline void add_op_possible_dref(ea_t addr, const op_t& x, const insn_t& insn, bool ref_anyway) {
-	if (ref_anyway || op_adds_xrefs(get_flags32(insn.ea), x.n)) {
-		ea_t ea = use_mapping(addr);
+	ea_t ea = use_mapping(addr);
 
+	if (ref_anyway || op_adds_xrefs(get_flags32(insn.ea), x.n)) {
 		if (is_mapped(ea)) {
-			insn.add_dref(addr, x.offb, dr_O);
-			insn.create_op_data(addr, x);
+			insn.add_dref(ea, x.offb, dr_O);
+			insn.create_op_data(ea, x);
 		}
 	}
 	else {
 		ea_clr_bank(insn.ea);
-		del_dref(insn.ea, addr);
+		del_dref(insn.ea, ea);
 	}
 }
 
