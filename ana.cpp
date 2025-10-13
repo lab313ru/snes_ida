@@ -133,16 +133,7 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   insn.Op1.offb = 1;
   insn.insnpref = static_cast<char>(addrMode);
 
-  //uint8_t argsSize = opSize >= 1 ? (opSize - 1) : 0;
-
   op_dtype_t dtype = dt_byte;
-
-  /*if (argsSize > 0) {
-    switch (argsSize) {
-    case 2: dtype = dt_word; break;
-    case 3: dtype = dt_dword; break;
-    }
-  }*/
 
   ea_t ea_bank = ea_get_bank(insn.ea);
 
@@ -219,6 +210,9 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
     return insn.size;
   }
 
+  uint8_t prev_mask = 0xFF;
+  uint8_t cur_flags = 0x00;
+
   switch (insn.itype) {
   case M65816_sep:
   case M65816_rep: {
@@ -226,10 +220,12 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
     bool is_zero = (insn.itype == M65816_rep);
 
     if (val & m65816_flags::MemoryMode8) {
-      ea_set_mem_bitmode(insn.ea, is_zero);
+      cur_flags = ea_set_mem_bitmode(insn.ea, is_zero);
+      prev_mask &= ~m65816_flags::MemoryMode8;
     }
     if (val & m65816_flags::IndexMode8) {
-      ea_set_idx_bitmode(insn.ea, is_zero);
+      cur_flags = ea_set_idx_bitmode(insn.ea, is_zero);
+      prev_mask &= ~m65816_flags::IndexMode8;
     }
   } // break;
   default: { // any other instruction
@@ -242,6 +238,8 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
 
     if (ok && xb.iscode) {
       uint8_t flags = ea_get_flags(xb.from);
+      flags &= prev_mask;
+      flags |= cur_flags;
       ea_set_flags(insn.ea, flags);
 
       recurse_ana = true;
