@@ -22,8 +22,9 @@ void out_m65816_t::out_byte_word(const op_t& x, bool is_byte) {
 }
 
 void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
-  if (ref_anyway || op_adds_xrefs(F, x.n)) {
-    out_name_expr(x, use_mapping(x.addr));
+  ea_t ea = use_mapping(x.addr);
+  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+    return;
   }
   else {
     out_byte_word(x, true);
@@ -33,8 +34,9 @@ void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
 void out_m65816_t::out_byteword_or_off(const op_t& x, bool ref_anyway) {
   bool is_byte = (insn.size == 2);
 
-  if (ref_anyway || op_adds_xrefs(F, x.n)) {
-    out_name_expr(x, use_mapping(x.addr));
+  ea_t ea = use_mapping(x.addr);
+  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+    return;
   }
   else {
     out_byte_word(x, is_byte);
@@ -42,8 +44,9 @@ void out_m65816_t::out_byteword_or_off(const op_t& x, bool ref_anyway) {
 }
 
 void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
-  if (ref_anyway || op_adds_xrefs(F, x.n)) {
-    out_name_expr(x, use_mapping(x.addr));
+  ea_t ea = use_mapping(x.addr);
+  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+    return;
   }
   else {
     out_byte_word(x, false);
@@ -51,8 +54,9 @@ void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
 }
 
 void out_m65816_t::out_24bit_or_off(const op_t& x, bool ref_anyway) {
-  if (ref_anyway || op_adds_xrefs(F, x.n)) {
-    out_name_expr(x, use_mapping(x.addr));
+  ea_t ea = use_mapping(x.addr);
+  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+    return;
   }
   else {
     out_value(x, OOFW_24);
@@ -157,10 +161,10 @@ bool out_m65816_t::out_operand(const op_t& x) {
     out_24bit_or_off(x, read_access);
   } break;
   case M::Abld: { // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
-    out_24bit_or_off(x, read_access);
+    out_24bit_or_off(x, true);
   } break;
   case M::Alx: { // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
-    out_24bit_or_off(x, read_access);
+    out_24bit_or_off(x, true);
     out_symbol(',');
     out_register("X");
   } break;
