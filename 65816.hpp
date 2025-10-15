@@ -263,6 +263,7 @@ public:
 
 		ea_t op_addr = 0;
 		segment_t* seg = nullptr;
+		set_offset_bank_mode_t mode = _mode;
 
 		if (is_code(get_flags(ctx->cur_ea)) && decode_insn(&insn, ctx->cur_ea)) {
 			M addrMode = static_cast<M>(insn.insnpref);
@@ -272,12 +273,12 @@ public:
 			case M::Abld: // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
 			case M::Ablp: // $000000 - absolute jump (opcodes: $5C/JML-JMP, $22/JSL)
 			case M::Ial: { // [$000000] - absolute (opcodes: $DC/JML-JMP)
-				_mode = set_offset_bank_mode_t::SOB_ZERO;
+				mode = set_offset_bank_mode_t::SOB_ZERO;
 			} break;
 			}
 		}
 
-		switch (_mode) {
+		switch (mode) {
 		case set_offset_bank_mode_t::SOB_CURRENT: {
 			seg = getseg(ctx->cur_ea);
 		} break;
