@@ -262,7 +262,7 @@ public:
 		insn_t insn;
 
 		ea_t op_addr = 0;
-		segment_t* seg = nullptr;
+		ea_t start_ea = BADADDR;
 		set_offset_bank_mode_t mode = _mode;
 
 		if (is_code(get_flags(ctx->cur_ea)) && decode_insn(&insn, ctx->cur_ea)) {
@@ -280,20 +280,34 @@ public:
 
 		switch (mode) {
 		case set_offset_bank_mode_t::SOB_CURRENT: {
-			seg = getseg(ctx->cur_ea);
+			start_ea = ctx->cur_ea & 0xFF0000;
+
+			if (!is_mapped(start_ea)) {
+				segment_t* seg = getseg(ctx->cur_ea);
+				start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+			}
 		} break;
 		case set_offset_bank_mode_t::SOB_SELECT: {
 			qstring title;
 			title.sprnt("Choose Bank for offset %a at %a", ctx->cur_value, ctx->cur_ea);
 
-			seg = getseg(ctx->cur_ea);
-			seg = choose_segm(title.c_str(), seg->start_ea);
+			start_ea = ctx->cur_ea & 0xFF0000;
+
+			if (!is_mapped(start_ea)) {
+				segment_t* seg = getseg(ctx->cur_ea);
+				start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+			}
+
+			segment_t* seg = choose_segm(title.c_str(), start_ea);
+			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
 		} break;
 		case set_offset_bank_mode_t::SOB_ZERO: {
-			seg = getseg(0);
+			segment_t* seg = getseg(0);
+			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
 		} break;
 		default: { // WRAM
-			seg = getseg(use_mapping(0)); // by default it points to zero page
+			segment_t* seg = getseg(use_mapping(0)); // by default it points to zero page
+			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
 		} break;
 		}
 
@@ -333,8 +347,8 @@ public:
 		//	}
 		//}
 
-		if (seg) {
-			ea_set_bank(ctx->cur_ea, seg->start_ea);
+		if (start_ea != BADADDR) {
+			ea_set_bank(ctx->cur_ea, start_ea);
 			set_op_type(ctx->cur_ea, off_flag(), opnum);
 			plan_ea(ctx->cur_ea);
 		}
