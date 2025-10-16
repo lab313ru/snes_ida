@@ -29,7 +29,7 @@ enum class m65816_mode : uint8_t {//
 	Ablp,  // $000000 - absolute jump
 	Abld,  // $000000 - absolute ref
 	Alx,  // $000000,X - absolute
-	Ind,  // ($0000) - Uses Program bank
+	Ind,  // ($0000) - Uses Zero bank
 	Iax,  // ($0000,X) - Uses Program bank
 	Ial,  // [$000000] - absolute
 	Rel,  // $0000 (8 bits PC-relative)

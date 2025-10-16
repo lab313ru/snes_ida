@@ -169,8 +169,16 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
     insn.Op1.value = insn.Op1.addr = opAddr;
     insn.Op1.dtype = dtype;
   } break;
+  case M::Ind: { // ($0000) - Uses Program bank (opcodes: $6C/JMP)
+    insn.Op1.type = o_near;
+    insn.Op1.addr = insn.Op1.value = use_mapping(opAddr);
+    insn.Op1.dtype = dtype;
+
+    if (!is_mapped(use_mapping(insn.Op1.addr))) {
+      return 0;
+    }
+  } break;
   case M::Iax: // ($0000,X) - uses Program bank (opcodes: $FC/JSR, $7C/JMP)
-  case M::Ind: // ($0000) - Uses Program bank (opcodes: $6C/JMP)
   case M::Absp: {// $0000 - Uses Program bank for jumps (opcodes: $4C/JMP, $20/JSR)
     insn.Op1.type = o_near;
     insn.Op1.addr = insn.Op1.value = (ea_bank == BADADDR) ? ((insn.ea & 0xFF0000) | opAddr) : opAddr;
