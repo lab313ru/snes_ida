@@ -77,11 +77,9 @@ const char* idaapi m65816_t::set_idp_options(const char* keyword, int value_type
 
 static const char addr24_t_string[] = "addr24_t";
 
-static uint32_t addr24_value = 0;
-
 static const data_type_t addr24_type = {
   sizeof(data_type_t), // size of this struct
-  &addr24_value, // user defined data
+  nullptr, // user defined data
   DTP_NODUP, // properties
   addr24_t_string, // internal name of the data type
   "24-bit address", // menu name. If nullptr, the type won't be visible in the Edit menu
@@ -122,17 +120,9 @@ static bool idaapi print_addr24(void* ud, qstring* out, const void* value, asize
   return true;
 }
 
-static void idaapi analyze_addr24(void* ud, ea_t current_ea, int operand_num) {
-  if (current_ea != BADADDR) {
-    current_ea = get_item_head(current_ea);
-    uint32_t* _ud = (uint32_t*)ud;
-    add_dref(current_ea, *_ud, dr_O);
-  }
-}
-
 static const data_format_t addr24_format = {
   sizeof(data_format_t), // size of this struct
-  &addr24_value, // user defined data
+  nullptr, // user defined data
   0, // properties
   addr24_t_string, // internal name of the data format
   nullptr, // menu name. If nullptr, the type won't be visible in the Edit menu
@@ -141,7 +131,7 @@ static const data_format_t addr24_format = {
   0, // text width of the value
   print_addr24, // callback to render colored text for the data
   nullptr, // scan
-  analyze_addr24, // analyze
+  nullptr, // analyze
 };
 
 ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
