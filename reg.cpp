@@ -181,6 +181,7 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     register_action(set_sel_offset_bank_action);
     register_action(set_wram_offset_bank_action);
     register_action(set_zero_offset_bank_action);
+    register_action(set_cust_offset_bank_action);
 
     addr24_id = register_custom_data_type(&addr24_type);
     addr24_fid = register_custom_data_format(&addr24_format);
@@ -198,6 +199,7 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
     unregister_action(set_sel_offset_bank_action_name);
     unregister_action(set_wram_offset_bank_action_name);
     unregister_action(set_zero_offset_bank_action_name);
+    unregister_action(set_cust_offset_bank_action_name);
 
     update_action_state("OpOffset", action_state_t::AST_ENABLE_ALWAYS);
     update_action_state("OpOffsetCs", action_state_t::AST_ENABLE_ALWAYS);

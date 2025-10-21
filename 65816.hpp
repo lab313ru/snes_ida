@@ -121,6 +121,7 @@ static const char set_cur_offset_bank_action_name[] = "65816:set_cur_offset_bank
 static const char set_sel_offset_bank_action_name[] = "65816:set_sel_offset_bank";
 static const char set_wram_offset_bank_action_name[] = "65816:set_wram_offset_bank";
 static const char set_zero_offset_bank_action_name[] = "65816:set_zero_offset_bank";
+static const char set_cust_offset_bank_action_name[] = "65816:set_cust_offset_bank";
 
 extern netnode helper;
 extern bool can_change_mem_mode(ea_t ea);
@@ -242,6 +243,7 @@ enum class set_offset_bank_mode_t : uint8_t {
 	SOB_SELECT,
 	SOB_WRAM,
 	SOB_ZERO,
+	SOB_CUSTOM,
 };
 
 struct set_offset_bank_action_t : public action_handler_t {
@@ -304,6 +306,12 @@ public:
 		case set_offset_bank_mode_t::SOB_ZERO: {
 			segment_t* seg = getseg(0);
 			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+		} break;
+		case set_offset_bank_mode_t::SOB_CUSTOM: {
+			ea_t asked_addr = BADADDR;
+			if (ask_addr(&asked_addr, "Enter specific value offset") && asked_addr != BADADDR && is_mapped(asked_addr)) {
+				start_ea = asked_addr;
+			}
 		} break;
 		default: { // WRAM
 			segment_t* seg = getseg(use_mapping(0)); // by default it points to zero page
@@ -377,6 +385,10 @@ struct set_zero_offset_bank_action_t : public set_offset_bank_action_t {
 	set_zero_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_ZERO) {}
 };
 
+struct set_cust_offset_bank_action_t : public set_offset_bank_action_t {
+	set_cust_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_CUSTOM) {}
+};
+
 struct m65816_t : public procmod_t {
 #define ROM_NO_BRK 0x01
 #define ROM_NO_COP 0x02
@@ -390,12 +402,14 @@ struct m65816_t : public procmod_t {
 	set_sel_offset_bank_action_t set_sel_offset_bank;
 	set_wram_offset_bank_action_t set_wram_offset_bank;
 	set_zero_offset_bank_action_t set_zero_offset_bank;
+	set_cust_offset_bank_action_t set_cust_offset_bank;
 
 	action_desc_t switch_bitmode_action = ACTION_DESC_LITERAL_PROCMOD(switch_bitmode_action_name, "Switch flag", &switch_bitmode, this, "Shift+X", NULL, -1);
 	action_desc_t set_cur_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_cur_offset_bank_action_name, "Change bank to current", &set_cur_offset_bank, this, "O", NULL, -1);
 	action_desc_t set_sel_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_sel_offset_bank_action_name, "Change bank to selected", &set_sel_offset_bank, this, "Ctrl+O", NULL, -1);
 	action_desc_t set_wram_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_wram_offset_bank_action_name, "Change bank to WRAM", &set_wram_offset_bank, this, "Shift+O", NULL, -1);
 	action_desc_t set_zero_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_zero_offset_bank_action_name, "Change bank to ZERO", &set_zero_offset_bank, this, "Ctrl+Shift+O", NULL, -1);
+	action_desc_t set_cust_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_cust_offset_bank_action_name, "Change bank to custom", &set_cust_offset_bank, this, "Ctrl+Alt+O", NULL, -1);
 
 	bool recurse_ana = false;
 	
