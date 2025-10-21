@@ -101,11 +101,11 @@ static const data_type_t addr24_type = {
 static bool idaapi print_addr24(void* ud, qstring* out, const void* value, asize_t, ea_t current_ea, int operand_num, int) {
   if (out != nullptr) {
     const uint8_t* b3 = (const uint8_t*)value;
-    uint32_t* _ud = (uint32_t*)ud;
+    //uint32_t* _ud = (uint32_t*)ud;
 
     uint32_t val = (b3[2] << 16) | (b3[1] << 8) | (b3[0] << 0);
     val = use_mapping(val);
-    *_ud = val;
+    //*_ud = val;
 
     qstring name;
     ssize_t ln = get_name_expr(&name, current_ea, operand_num, val, BADADDR);
