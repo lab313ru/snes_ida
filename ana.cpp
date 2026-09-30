@@ -150,11 +150,8 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
 
   op_dtype_t dtype = dt_byte;
 
+  // bank of an offset (O / Ctrl+R): the operand value stays as encoded, users of the address add it (op_full_addr)
   ea_t ea_bank = ea_get_bank(insn.ea);
-
-  if (ea_bank != BADADDR) {
-    opAddr |= (uint32_t)ea_bank;
-  }
 
   switch (addrMode) {
   case M::Im8: // #$00 - one byte (opcodes: $E2/SEP, $C2/REP, $42/WDM, $02/COP, $00/BRK)
@@ -186,10 +183,10 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   } break;
   case M::Ind: { // ($0000) - Uses Program bank (opcodes: $6C/JMP)
     insn.Op1.type = o_near;
-    insn.Op1.addr = insn.Op1.value = use_mapping(opAddr);
+    insn.Op1.addr = insn.Op1.value = (ea_bank != BADADDR) ? opAddr : use_mapping(opAddr);
     insn.Op1.dtype = dtype;
 
-    if (!is_mapped(use_mapping(insn.Op1.addr))) {
+    if (!is_mapped(use_mapping((ea_bank != BADADDR) ? (opAddr | ea_bank) : insn.Op1.addr))) {
       return 0;
     }
   } break;
@@ -201,7 +198,7 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
 
     if (ea_bank != BADADDR) { // bank chosen with O
       insn.Op1.addr = insn.Op1.value = opAddr;
-      if (!is_mapped(use_mapping(insn.Op1.addr))) {
+      if (!is_mapped(use_mapping(opAddr | ea_bank))) {
         return 0;
       }
       break;
@@ -245,6 +242,11 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   case M::Regs: { // no args
 
   } break;
+  }
+
+  // the size of the data the operand refers to (used for the data created at the referenced address)
+  if (insn.Op1.type == o_mem && addrMode != M::Bm) {
+    insn.Op1.dtype = get_data_dtype(insn.itype, addrMode, flags);
   }
 
   if (recurse_ana) {

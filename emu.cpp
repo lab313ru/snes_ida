@@ -11,8 +11,13 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
 
     ea_t target;
     if (get_auto_data_ref(insn, x, &target)) {
-      // only the reference: the size of the accessed data is not known for sure
       insn.add_dref(target, x.offb, read_access ? dr_R : dr_W);
+      // data of the accessed size, like O does (not in the registers area: a word would hide the next register's name)
+      // (not for an indexed operand: its address may never be accessed itself)
+      segment_t* seg = getseg(target);
+      if (seg != nullptr && seg->type != SEG_XTRN && !is_indexed_operand(insn)) {
+        insn.create_op_data(target, x);
+      }
       break;
     }
 
@@ -28,28 +33,51 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
     case M::Dps: // ($00) - by stack, direct page reg (opcodes: $D4/PEI)
     case M::Idp: // ($00) - direct page reg
     case M::Idl: { // [$00] - direct page reg
-      add_op_possible_dref(x.addr, x, insn, false);
+      add_op_possible_dref(op_full_addr(insn, x), x, insn, false);
     } break;
     case M::Abx: // $0000,X - Uses Data bank (opcodes: $BC/LDY, $3C/BIT, $FD/SBC, $DD/CMP, $BD/LDA, $9D/STA, $7D/ADC, $5D/EOR, $3D/AND, $1D/ORA, $FE/INC, $DE/DEC, $9E/STZ, $7E/ROR, $5E/LSR, $3E/ROL, $1E/ASL)
     case M::Aby: // $0000,Y - Uses Data bank (opcodes: $BE/LDX, $F9/SBC, $D9/CMP, $B9/LDA, $99/STA, $79/ADC, $59/EOR, $39/AND, $19/ORA)
     case M::Absd: { // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
       // the bank is unknown here (no DB value, no O): reference only on the user's request
-      add_op_possible_dref(x.addr, x, insn, false);
+      add_op_possible_dref(op_full_addr(insn, x), x, insn, false);
     } break;
     case M::Alx: // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
     case M::Abld: { // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
-      add_op_possible_dref(x.addr, x, insn, read_access);
+      add_op_possible_dref(op_full_addr(insn, x), x, insn, read_access);
     } break;
     }
   } break;
   case o_near: {
-    if (x.specflag1 == 0) { // specflag1: the target depends on an unknown program bank
-      add_op_cref(x.addr, x, insn);
+    if (x.specflag1 != 0) { // specflag1: the target depends on an unknown program bank
+      break;
+    }
+    switch (static_cast<M>(insn.insnpref)) {
+    case M::Ind: // JMP ($0000)
+    case M::Iax: // JMP/JSR ($0000,X)
+    case M::Ial: { // JML [$0000]
+      // the operand is where the target address is read from (a pointer or a table of them), not code:
+      // a read reference only, the size of a table is unknown
+      ea_t ea = use_mapping(op_full_addr(insn, x));
+      if (is_mapped(ea)) {
+        insn.add_dref(ea, x.offb, dr_R);
+      }
+    } break;
+    default:
+      if (insn.itype == M65816_per) {
+        // PER only pushes the address (often a return address - 1 for RTS/RTL), it doesn't jump there
+        ea_t ea = use_mapping(op_full_addr(insn, x));
+        if (is_mapped(ea)) {
+          insn.add_dref(op_ref_target(insn.ea, x.n, ea), x.offb, dr_O);
+        }
+        break;
+      }
+      add_op_cref(op_full_addr(insn, x), x, insn);
+      break;
     }
   } break;
   case o_imm: {
     set_immd(insn.ea);
-    add_op_possible_dref(x.addr, x, insn, false);
+    add_op_possible_dref(op_full_addr(insn, x), x, insn, false);
   } break;
   }
 }

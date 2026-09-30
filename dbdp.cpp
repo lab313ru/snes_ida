@@ -293,7 +293,8 @@ void propagator_t::transfer(const insn_t& insn, state_t& st, bool& is_return, bo
 		st.push(lo);
 	} break;
 	case M65816_phk:
-		st.push(val_t::cnst((uint16_t)((insn.ea >> 16) & 0xFF)));
+		// the bank of the address in the database is not necessarily PB: HiROM code may run from a mirror
+		st.push(st.pb.kind == VK_CONST ? val_t::cnst(st.pb.v & 0xFF) : val_t::unk());
 		break;
 	case M65816_php:
 		st.push(val_t::unk());
@@ -388,6 +389,48 @@ void propagator_t::transfer(const insn_t& insn, state_t& st, bool& is_return, bo
 	}
 }
 
+bool is_branch_opcode(uint8_t op) {
+	M mode = m65816_OpMode[op];
+	return mode == M::Rel || mode == M::Rell;
+}
+
+// PB a function is entered with, when every call gives the same bank: JSL / JML long carry it in the operand;
+// JSR / JMP / branches keep the PB of the calling instruction, used when it is known from the Mesen CDL or set manually.
+// Any other reference (indirect long jump, data, ordinary flow) makes it unknown.
+val_t entry_pb_from_callers(func_t* pfn) {
+	int bank = -1;
+	xrefblk_t xb;
+	for (bool ok = xb.first_to(pfn->start_ea, XREF_ALL); ok; ok = xb.next_to()) {
+		if (!xb.iscode || xb.type == fl_F) {
+			return val_t::make(VK_ENTRY);
+		}
+		if (get_func(xb.from) == pfn) {
+			continue; // a loop back to the entry: the same PB
+		}
+		int b;
+		uint8_t op = get_byte(xb.from);
+		if (op == 0x22 || op == 0x5C) { // JSL / JML long
+			b = get_byte(xb.from + 3);
+		}
+		else if (op == 0x20 || op == 0x4C || op == 0x7C || op == 0xFC || is_branch_opcode(op)) {
+			uint16_t v;
+			known_reg_src_t src;
+			if (!ea_get_known_reg(xb.from, PROGRAM_BANK_TAG, &v, &src) || (src != KRS_CDL && src != KRS_MANUAL)) {
+				return val_t::make(VK_ENTRY);
+			}
+			b = v & 0xFF;
+		}
+		else {
+			return val_t::make(VK_ENTRY);
+		}
+		if (bank >= 0 && bank != b) {
+			return val_t::make(VK_ENTRY);
+		}
+		bank = b;
+	}
+	return bank >= 0 ? val_t::cnst((uint16_t)bank) : val_t::make(VK_ENTRY);
+}
+
 const func_result_t& propagator_t::analyze(func_t* pfn) {
 	auto found = results.find(pfn->start_ea);
 	if (found != results.end()) {
@@ -400,7 +443,7 @@ const func_result_t& propagator_t::analyze(func_t* pfn) {
 	state_t entry;
 	entry.db = val_t::make(VK_ENTRY);
 	entry.d = val_t::make(VK_ENTRY);
-	entry.pb = vector_entries.count(pfn->start_ea) != 0 ? val_t::cnst(0) : val_t::make(VK_ENTRY);
+	entry.pb = vector_entries.count(pfn->start_ea) != 0 ? val_t::cnst(0) : entry_pb_from_callers(pfn);
 	if (pfn->start_ea == reset_entry) {
 		entry.db = val_t::cnst(0);
 		entry.d = val_t::cnst(0);

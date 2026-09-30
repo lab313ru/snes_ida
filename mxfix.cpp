@@ -115,9 +115,32 @@ bool decodes_cleanly(const std::vector<piece_t>& path, uint8_t flags, ea_t confl
 	return false;
 }
 
+// Undefines code that nothing refers to anymore, from ea along the ordinary flow: what a wrongly decoded jump or
+// branch created. Stops at code something else refers to, at named places and function starts.
+void undefine_orphan_code(ea_t ea) {
+	for (int n = 0; n < MAX_SIM_INSNS; n++) {
+		flags64_t f = get_flags(ea);
+		if (!is_code(f) || has_user_name(f) || get_func(ea) != nullptr && get_func(ea)->start_ea == ea) {
+			return;
+		}
+		xrefblk_t xb;
+		if (xb.first_to(ea, XREF_CODE)) {
+			return;
+		}
+		ea_t next = get_item_end(ea);
+		bool flows = !ends_flow(get_byte(ea));
+		del_items(ea, DELIT_NOTRUNC | DELIT_KEEPFUNC);
+		if (!flows) {
+			return;
+		}
+		ea = next;
+	}
+}
+
 // Decodes the path again: its pieces are undefined (a piece may lie below the start when a branch goes backwards),
 // then the code is created again from the start of the path and from every place the rest of the code refers to.
 // The jump targets of the old path itself are not used: with the new flags they may be in the middle of instructions.
+// Code created only by the jumps of the old decoding is undefined (the new one creates what it needs).
 void redecode_path(const std::vector<piece_t>& path, ea_t conflict) {
 	std::vector<std::pair<ea_t, ea_t>> ranges;
 	for (const piece_t& piece : path) {
@@ -148,8 +171,23 @@ void redecode_path(const std::vector<piece_t>& path, ea_t conflict) {
 		}
 	}
 
+	std::set<ea_t> old_targets;
+	for (const auto& r : ranges) {
+		for (ea_t ea = r.first; ea < r.second && ea != BADADDR; ea = next_head(ea, r.second)) {
+			xrefblk_t xb;
+			for (bool ok = xb.first_from(ea, XREF_CODE | XREF_NOFLOW); ok; ok = xb.next_from()) {
+				if (!in_ranges(xb.to)) {
+					old_targets.insert(xb.to);
+				}
+			}
+		}
+	}
+
 	for (const auto& r : ranges) {
 		del_items(r.first, DELIT_NOTRUNC | DELIT_KEEPFUNC, r.second - r.first);
+	}
+	for (ea_t ea : old_targets) {
+		undefine_orphan_code(ea);
 	}
 	for (ea_t ea : entries) {
 		auto_make_code(ea);
@@ -170,6 +208,75 @@ ea_t single_flow_pred(ea_t ea) {
 	return count == 1 ? pred : BADADDR;
 }
 
+// Where the flags at ea are inherited from, following single predecessors back: the instruction reached from
+// several places or from nowhere, a call / PLP / XCE. BADADDR when SEP/REP or a flag set by the user is on the way.
+ea_t inherit_origin(ea_t ea) {
+	for (int n = 0; n < MAX_WALK_BACK; n++) {
+		if (ea_is_user_bitmode(ea)) {
+			return BADADDR;
+		}
+		ea_t pred = single_flow_pred(ea);
+		if (pred == BADADDR || !is_code(get_flags(pred)) || resets_flags(get_byte(pred))) {
+			return ea;
+		}
+		uint8_t op = get_byte(pred);
+		if (op == 0xE2 || op == 0xC2 || ea_is_user_bitmode(pred)) {
+			return BADADDR;
+		}
+		ea = pred;
+	}
+	return BADADDR;
+}
+
+// ea is reached from several places (ordinary flow and jumps/branches only): when all of them inherit their flags
+// from the same place without changing them, ea has the same flags whichever way it is reached, so the walk back
+// may continue through one of them (the ordinary flow when there is one)
+ea_t joined_flow_pred(ea_t ea) {
+	std::vector<ea_t> preds;
+	ea_t flow = BADADDR;
+	xrefblk_t xb;
+	for (bool ok = xb.first_to(ea, XREF_CODE); ok; ok = xb.next_to()) {
+		if (xb.type != fl_F && xb.type != fl_JN && xb.type != fl_JF) {
+			return BADADDR;
+		}
+		if (!is_code(get_flags(xb.from)) || resets_flags(get_byte(xb.from))) {
+			return BADADDR;
+		}
+		uint8_t op = get_byte(xb.from);
+		if (op == 0xE2 || op == 0xC2 || ea_is_user_bitmode(xb.from)) {
+			return BADADDR;
+		}
+		if (xb.type == fl_F) {
+			flow = xb.from;
+		}
+		preds.push_back(xb.from);
+	}
+	if (preds.size() < 2) {
+		return BADADDR;
+	}
+	ea_t origin = BADADDR;
+	for (ea_t p : preds) {
+		ea_t o = inherit_origin(p);
+		if (o == BADADDR || o == ea || (origin != BADADDR && o != origin)) {
+			return BADADDR;
+		}
+		origin = o;
+	}
+	return flow != BADADDR ? flow : preds.front();
+}
+
+// flags set by an earlier fix inside the path are inherited again (the fix at the start of the path replaces them)
+void clear_auto_bitmodes(const std::vector<piece_t>& path, ea_t conflict) {
+	for (const piece_t& piece : path) {
+		ea_t end = (piece.jump != BADADDR) ? get_item_end(piece.jump) : conflict + 1;
+		for (ea_t ea = piece.start; ea < end && ea != BADADDR; ea = next_head(ea, end)) {
+			if (ea != path.front().start && ea_is_auto_bitmode(ea)) {
+				ea_set_manual_bitmode(ea, false);
+			}
+		}
+	}
+}
+
 bool fix_conflict(ea_t conflict, ushort idpflags) {
 	uint8_t op = get_byte(conflict);
 	if (is_code(get_flags(conflict)) || !is_disabled_opcode(op, idpflags)) {
@@ -186,7 +293,7 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 	uint8_t nearest = 0;    // flag of the nearest instruction whose size depends on M/X
 	std::vector<std::pair<ea_t, ea_t>> jumps; // (jump, its target) on the path, from the conflict backwards
 	for (int n = 0; n < MAX_WALK_BACK; n++) {
-		if (ea_is_manual_bitmode(start)) {
+		if (ea_is_user_bitmode(start)) {
 			fixed_bits = 0x30;
 			break;
 		}
@@ -195,6 +302,9 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 			nearest = mode == M::Imm ? m65816_flags::MemoryMode8 : mode == M::Imx ? m65816_flags::IndexMode8 : 0;
 		}
 		ea_t pred = single_flow_pred(start);
+		if (pred == BADADDR) {
+			pred = joined_flow_pred(start);
+		}
 		if (pred == BADADDR || !is_code(get_flags(pred))) {
 			break;
 		}
@@ -208,7 +318,7 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 				break;
 			}
 		}
-		if (ea_is_manual_bitmode(pred)) {
+		if (ea_is_user_bitmode(pred)) {
 			fixed_bits = 0x30;
 			break;
 		}
@@ -253,7 +363,8 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 		}
 
 		ea_set_flags(start, new_flags);
-		ea_set_manual_bitmode(start, true);
+		ea_set_auto_bitmode(start);
+		clear_auto_bitmodes(path, conflict);
 		redecode_path(path, conflict);
 
 		qstring what;
@@ -273,6 +384,27 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 }
 
 } // namespace
+
+void redecode_flow_from(ea_t ea) {
+	if (!is_code(get_flags(ea))) {
+		return;
+	}
+	// the ordinary flow from ea while it stays code: the instructions that inherit the flags from it
+	ea_t last = ea;
+	for (int n = 0; n < MAX_SIM_INSNS; n++) {
+		if (ends_flow(get_byte(last))) {
+			break;
+		}
+		ea_t next = get_item_end(last);
+		flags64_t f = get_flags(next);
+		if (!is_code(f) || !is_flow(f) || ea_is_manual_bitmode(next)) {
+			break;
+		}
+		last = next;
+	}
+	std::vector<piece_t> path = { { ea, BADADDR } };
+	redecode_path(path, last);
+}
 
 bool fix_mx_conflicts(std::set<ea_t>& conflicts, ushort idpflags) {
 	bool changed = false;

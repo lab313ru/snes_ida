@@ -94,7 +94,32 @@ const char* idaapi m65816_t::set_idp_options(const char* keyword, int value_type
 void m65816_t::on_auto_idle() {
   if (!mx_conflicts.empty() && fix_mx_conflicts(mx_conflicts, idpflags)) {
     known_regs_dirty = true; // the code is decoded again; the propagation runs after that
+    retry_failed_funcs = true;
     return;
+  }
+  if (retry_failed_funcs) {
+    // the code decoded again: functions that failed because of it may be created now
+    retry_failed_funcs = false;
+    std::map<ea_t, int> todo;
+    todo.swap(failed_funcs);
+    for (auto& it : todo) {
+      ea_t ea = it.first;
+      if (!is_code(get_flags(ea)) || get_func(ea) != nullptr) {
+        continue;
+      }
+      if (add_func(ea)) {
+        msg("%a: function created after the M/X fix\n", ea);
+      }
+      else if (it.second > 1) {
+        auto f = failed_funcs.find(ea); // failed again: noted again by ev_func_bounds
+        if (f != failed_funcs.end()) {
+          f->second = it.second - 1;
+        }
+      }
+      else {
+        failed_funcs.erase(ea);
+      }
+    }
   }
   if (known_regs_dirty) {
     known_regs_dirty = false;
@@ -170,7 +195,7 @@ int idaapi known_regs_timer_cb(void* ud) {
   if (!pm->new_tbytes.empty()) {
     pm->convert_new_tbytes();
   }
-  if ((pm->known_regs_dirty || !pm->mx_conflicts.empty()) && auto_is_ok()) {
+  if ((pm->known_regs_dirty || !pm->mx_conflicts.empty() || pm->retry_failed_funcs) && auto_is_ok()) {
     pm->on_auto_idle();
   }
   return 500;
@@ -288,6 +313,48 @@ static const data_format_t offset24_format = {
   analyze_offset24, // analyze: creates the references
 };
 
+// switches a 3-byte _TBYTE member of a structure between the d24 number and offset representations
+static bool toggle_data24_member(tinfo_t& tif, int idx, const udm_t& udm) {
+  if (data24_id <= 0 || data24_num_fid <= 0 || data24_off_fid <= 0) {
+    return false;
+  }
+  if (!udm.type.is_tbyte() || udm.type.get_size() != 3) {
+    return false;
+  }
+  bool is_offset = udm.repr.get_vtype() == FRB_CUSTOM && udm.repr.cd.fid == data24_off_fid;
+  value_repr_t repr;
+  repr.set_vtype(FRB_CUSTOM);
+  repr.cd.dtid = (int16)data24_id;
+  repr.cd.fid = (int16)(is_offset ? data24_num_fid : data24_off_fid);
+  if (tif.set_udm_repr(idx, repr) != TERR_OK) {
+    return false;
+  }
+  qstring tname;
+  tif.get_type_name(&tname);
+  msg("%s.%s: %s (all instances)\n", tname.c_str(), udm.name.c_str(), is_offset ? "24-bit number" : "24-bit offset");
+  return true;
+}
+
+// O on a data24_t field in a type listing (Local Types): switches it between number and offset
+bool toggle_data24_type_member(const til_type_ref_t* ref) {
+  if (ref == nullptr || !ref->is_udt() || !ref->on_member()) {
+    return false;
+  }
+  tinfo_t tif;
+  if (ref->ordinal == 0 || !tif.get_numbered_type(nullptr, ref->ordinal)) {
+    tif = ref->tif;
+  }
+  udm_t udm;
+  udm.offset = ref->udm.offset;
+  int idx = tif.find_udm(&udm, STRMEM_OFFSET);
+  if (idx < 0 || !toggle_data24_member(tif, idx, udm)) {
+    return false;
+  }
+  // instances in the listing show the new representation
+  request_refresh(IWID_DISASM);
+  return true;
+}
+
 // O on a d24 item or on a data24_t field of a structure instance: switches between number and offset.
 // Returns false when there is no such item at ea.
 bool toggle_data24_offset(ea_t ea) {
@@ -324,21 +391,10 @@ bool toggle_data24_offset(ea_t ea) {
     udm_t udm;
     udm.offset = uint64(ea - head) * 8;
     int idx = tif.find_udm(&udm, STRMEM_OFFSET);
-    if (idx < 0 || !udm.type.is_tbyte() || udm.type.get_size() != 3) {
-      return false;
-    }
-    bool is_offset = udm.repr.get_vtype() == FRB_CUSTOM && udm.repr.cd.fid == data24_off_fid;
-    value_repr_t repr;
-    repr.set_vtype(FRB_CUSTOM);
-    repr.cd.dtid = (int16)data24_id;
-    repr.cd.fid = (int16)(is_offset ? data24_num_fid : data24_off_fid);
-    if (tif.set_udm_repr(idx, repr) != TERR_OK) {
+    if (idx < 0 || !toggle_data24_member(tif, idx, udm)) {
       return false;
     }
     plan_range(head, head + get_item_size(head));
-    qstring tname;
-    tif.get_type_name(&tname);
-    msg("%s.%s: %s (all instances)\n", tname.c_str(), udm.name.c_str(), is_offset ? "24-bit number" : "24-bit offset");
     return true;
   }
   return false;
@@ -357,8 +413,8 @@ void m65816_t::ensure_data24_typedef() {
   }
 }
 
-// 3-byte _TBYTE fields (also through the data24_t typedef) without a representation get the number
-// representation: "data24_t ptr;" becomes "data24_t ptr __custom(d24,number);" (O on a field in an instance
+// 3-byte _TBYTE fields (created by the D carousel, or declared as _TBYTE) become data24_t, and fields without
+// a representation get the number one: "data24_t ptr;" becomes "data24_t ptr __custom(d24,number);" (O on a field in an instance
 // switches it to "__custom(d24,offset)").
 void m65816_t::apply_data24_repr(const char* udtname) {
   if (udtname == nullptr || data24_id <= 0 || data24_num_fid <= 0 || in_data24_repr) {
@@ -370,14 +426,28 @@ void m65816_t::apply_data24_repr(const char* udtname) {
     return;
   }
 
+  tinfo_t data24;
+  bool have_data24 = data24.get_named_type(nullptr, data24_typedef_name);
+
   in_data24_repr = true;
   for (size_t i = 0; i < udt.size(); i++) {
     const udm_t& udm = udt[i];
-    if (udm.type.is_tbyte() && udm.type.get_size() == 3 && udm.repr.get_vtype() == 0) {
-      value_repr_t repr;
+    if (!udm.type.is_tbyte() || udm.type.get_size() != 3) {
+      continue;
+    }
+    value_repr_t repr = udm.repr;
+    if (repr.get_vtype() == 0) {
       repr.set_vtype(FRB_CUSTOM);
       repr.cd.dtid = (int16)data24_id;
       repr.cd.fid = (int16)data24_num_fid;
+    }
+    // a plain _TBYTE (e.g. from the D carousel) becomes data24_t
+    qstring tname;
+    bool is_typedef = udm.type.is_typedef() && udm.type.get_type_name(&tname) && tname == data24_typedef_name;
+    if (have_data24 && !is_typedef) {
+      tif.set_udm_type(i, data24, 0, &repr);
+    }
+    else if (udm.repr.get_vtype() == 0) {
       tif.set_udm_repr(i, repr);
     }
   }
@@ -519,6 +589,14 @@ ssize_t idaapi m65816_t::on_event(ssize_t msgid, va_list va) {
       insn->itype == M65816_jsr ||
       insn->itype == M65816_jsl
       ) ? 1 : -1;
+  } break;
+  case processor_t::ev_func_bounds: {
+    int* code = va_arg(va, int*);
+    func_t* pfn = va_arg(va, func_t*);
+    if (code != nullptr && *code == FIND_FUNC_UNDEF && pfn != nullptr && failed_funcs.size() < 10000) {
+      failed_funcs.emplace(pfn->start_ea, 3);
+    }
+    retcode = 0;
   } break;
   case processor_t::ev_ana_insn: {
     auto* out = va_arg(va, insn_t*);

@@ -8,6 +8,7 @@ public:
   void out_byte_or_off(const op_t& x, bool ref_anyway);
   void out_byteword_or_off(const op_t& x, bool ref_anyway);
   void out_word_or_off(const op_t& x, bool ref_anyway);
+  bool out_offset_expr(const op_t& x, ea_t value);
   void out_24bit_or_off(const op_t& x, bool ref_anyway);
   bool out_operand(const op_t& x);
   void out_insn(void);
@@ -16,6 +17,20 @@ public:
 CASSERT(sizeof(out_m65816_t) == sizeof(outctx_t));
 
 DECLARE_OUT_FUNCS(out_m65816_t);
+
+// an offset: the name of its target (O / Ctrl+R), followed by the difference to the value when they differ ("loc_C01B0E-1")
+bool out_m65816_t::out_offset_expr(const op_t& x, ea_t value) {
+  ea_t target = op_ref_target(insn.ea, x.n, value);
+  if (!out_name_expr(x, target, target)) {
+    return false;
+  }
+  adiff_t delta = adiff_t(value - target);
+  if (delta != 0) {
+    out_symbol(delta < 0 ? '-' : '+');
+    out_long(delta < 0 ? -delta : delta, 16);
+  }
+  return true;
+}
 
 void out_m65816_t::out_byte_word(const op_t& x, bool is_byte) {
   out_value(x, is_byte ? OOFW_8 : OOFW_16);
@@ -27,8 +42,8 @@ void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
     return;
   }
 
-  ea_t ea = use_mapping(x.addr);
-  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+  ea_t ea = use_mapping(op_full_addr(insn, x));
+  if ((ref_anyway && out_offset_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_offset_expr(x, ea))) {
     return;
   }
   else {
@@ -39,8 +54,8 @@ void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
 void out_m65816_t::out_byteword_or_off(const op_t& x, bool ref_anyway) {
   bool is_byte = (insn.size == 2);
 
-  ea_t ea = use_mapping(x.addr);
-  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+  ea_t ea = use_mapping(op_full_addr(insn, x));
+  if ((ref_anyway && out_offset_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_offset_expr(x, ea))) {
     return;
   }
   else {
@@ -59,8 +74,8 @@ void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
     return;
   }
 
-  ea_t ea = use_mapping(x.addr);
-  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+  ea_t ea = use_mapping(op_full_addr(insn, x));
+  if ((ref_anyway && out_offset_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_offset_expr(x, ea))) {
     return;
   }
   else {
@@ -74,8 +89,8 @@ void out_m65816_t::out_24bit_or_off(const op_t& x, bool ref_anyway) {
     return;
   }
 
-  ea_t ea = use_mapping(x.addr);
-  if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
+  ea_t ea = use_mapping(op_full_addr(insn, x));
+  if ((ref_anyway && out_offset_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_offset_expr(x, ea))) {
     return;
   }
   else {
@@ -256,6 +271,227 @@ void out_m65816_t::out_proc_mnem(void) {
   out_mnem(8, postfix);
 }
 
+// What each instruction does, for the hint
+static const std::pair<uint16_t, const char*> insn_descriptions[] = {
+  { M65816_adc, "Add memory to accumulator with carry" },
+  { M65816_and, "AND memory with accumulator" },
+  { M65816_asl, "Shift left one bit (memory or accumulator)" },
+  { M65816_bcc, "Branch if carry clear (C=0)" },
+  { M65816_bcs, "Branch if carry set (C=1)" },
+  { M65816_beq, "Branch if equal (Z=1)" },
+  { M65816_bit, "Test bits of memory against accumulator" },
+  { M65816_bmi, "Branch if minus (N=1)" },
+  { M65816_bne, "Branch if not equal (Z=0)" },
+  { M65816_bpl, "Branch if plus (N=0)" },
+  { M65816_bra, "Branch always" },
+  { M65816_brk, "Software break (interrupt through the BRK vector)" },
+  { M65816_brl, "Branch always long" },
+  { M65816_bvc, "Branch if overflow clear (V=0)" },
+  { M65816_bvs, "Branch if overflow set (V=1)" },
+  { M65816_clc, "Clear carry flag" },
+  { M65816_cld, "Clear decimal mode flag" },
+  { M65816_cli, "Clear interrupt disable flag (enable IRQ)" },
+  { M65816_clv, "Clear overflow flag" },
+  { M65816_cmp, "Compare memory with accumulator" },
+  { M65816_cop, "Co-processor enable (interrupt through the COP vector)" },
+  { M65816_cpx, "Compare memory with X" },
+  { M65816_cpy, "Compare memory with Y" },
+  { M65816_dec, "Decrement (memory or accumulator)" },
+  { M65816_dex, "Decrement X" },
+  { M65816_dey, "Decrement Y" },
+  { M65816_eor, "Exclusive OR memory with accumulator" },
+  { M65816_inc, "Increment (memory or accumulator)" },
+  { M65816_inx, "Increment X" },
+  { M65816_iny, "Increment Y" },
+  { M65816_jml, "Jump long (sets the program bank)" },
+  { M65816_jmp, "Jump" },
+  { M65816_jsl, "Jump to subroutine long (sets the program bank)" },
+  { M65816_jsr, "Jump to subroutine" },
+  { M65816_lda, "Load accumulator from memory" },
+  { M65816_ldx, "Load X from memory" },
+  { M65816_ldy, "Load Y from memory" },
+  { M65816_lsr, "Shift right one bit (memory or accumulator)" },
+  { M65816_mvn, "Block move, addresses incremented (C+1 bytes from X to Y)" },
+  { M65816_mvp, "Block move, addresses decremented (C+1 bytes from X to Y)" },
+  { M65816_nop, "No operation" },
+  { M65816_ora, "OR memory with accumulator" },
+  { M65816_pea, "Push effective absolute address (16-bit operand)" },
+  { M65816_pei, "Push effective indirect address (16-bit value at the direct page)" },
+  { M65816_per, "Push effective PC-relative address" },
+  { M65816_pha, "Push accumulator" },
+  { M65816_phb, "Push data bank register" },
+  { M65816_phd, "Push direct page register" },
+  { M65816_phk, "Push program bank register" },
+  { M65816_php, "Push processor status" },
+  { M65816_phx, "Push X" },
+  { M65816_phy, "Push Y" },
+  { M65816_pla, "Pull accumulator" },
+  { M65816_plb, "Pull data bank register" },
+  { M65816_pld, "Pull direct page register" },
+  { M65816_plp, "Pull processor status" },
+  { M65816_plx, "Pull X" },
+  { M65816_ply, "Pull Y" },
+  { M65816_rep, "Reset (clear) processor status bits" },
+  { M65816_rol, "Rotate left one bit through carry (memory or accumulator)" },
+  { M65816_ror, "Rotate right one bit through carry (memory or accumulator)" },
+  { M65816_rti, "Return from interrupt" },
+  { M65816_rtl, "Return from subroutine long (restores the program bank)" },
+  { M65816_rts, "Return from subroutine" },
+  { M65816_sbc, "Subtract memory from accumulator with borrow" },
+  { M65816_sec, "Set carry flag" },
+  { M65816_sed, "Set decimal mode flag" },
+  { M65816_sei, "Set interrupt disable flag (disable IRQ)" },
+  { M65816_sep, "Set processor status bits" },
+  { M65816_sta, "Store accumulator to memory" },
+  { M65816_stp, "Stop the processor until reset" },
+  { M65816_stx, "Store X to memory" },
+  { M65816_sty, "Store Y to memory" },
+  { M65816_stz, "Store zero to memory" },
+  { M65816_tax, "Transfer accumulator to X" },
+  { M65816_tay, "Transfer accumulator to Y" },
+  { M65816_tcd, "Transfer 16-bit accumulator to direct page register" },
+  { M65816_tcs, "Transfer 16-bit accumulator to stack pointer" },
+  { M65816_tdc, "Transfer direct page register to 16-bit accumulator" },
+  { M65816_trb, "Test and reset memory bits against accumulator" },
+  { M65816_tsb, "Test and set memory bits against accumulator" },
+  { M65816_tsc, "Transfer stack pointer to 16-bit accumulator" },
+  { M65816_tsx, "Transfer stack pointer to X" },
+  { M65816_txa, "Transfer X to accumulator" },
+  { M65816_txs, "Transfer X to stack pointer" },
+  { M65816_txy, "Transfer X to Y" },
+  { M65816_tya, "Transfer Y to accumulator" },
+  { M65816_tyx, "Transfer Y to X" },
+  { M65816_wai, "Wait for interrupt" },
+  { M65816_wdm, "Reserved (WDM)" },
+  { M65816_xba, "Exchange the bytes of the accumulator (B and A)" },
+  { M65816_xce, "Exchange carry and emulation flags" },
+};
+
+static const char* insn_description(uint16_t itype) {
+  for (const auto& d : insn_descriptions) {
+    if (d.first == itype) {
+      return d.second;
+    }
+  }
+  return nullptr;
+}
+
+static const char* bytes_word(int n) {
+  return n == 1 ? "byte" : "bytes";
+}
+
+static const char* a_width(bool m8) {
+  return m8 ? "8-bit accumulator: M=1" : "16-bit accumulator: M=0";
+}
+
+static const char* xy_width(bool x8) {
+  return x8 ? "8-bit index registers: X=1" : "16-bit index registers: X=0";
+}
+
+// Memory accessed by an instruction, for the hint: size and direction of the data, pointer used, stack traffic
+static void describe_access(const insn_t& insn, qstrvec_t* hint) {
+  uint8_t flags = ea_get_flags(insn.ea);
+  bool m8 = (flags & m65816_flags::MemoryMode8) != 0;
+  bool x8 = (flags & m65816_flags::IndexMode8) != 0;
+  M mode = static_cast<M>(insn.insnpref);
+  qstring s;
+
+  // stack and block moves
+  switch (insn.itype) {
+  case M65816_pha: s.sprnt("Pushes %d %s (%s)", m8 ? 1 : 2, bytes_word(m8 ? 1 : 2), a_width(m8)); break;
+  case M65816_pla: s.sprnt("Pulls %d %s (%s)", m8 ? 1 : 2, bytes_word(m8 ? 1 : 2), a_width(m8)); break;
+  case M65816_phx: case M65816_phy: s.sprnt("Pushes %d %s (%s)", x8 ? 1 : 2, bytes_word(x8 ? 1 : 2), xy_width(x8)); break;
+  case M65816_plx: case M65816_ply: s.sprnt("Pulls %d %s (%s)", x8 ? 1 : 2, bytes_word(x8 ? 1 : 2), xy_width(x8)); break;
+  case M65816_phb: case M65816_phk: case M65816_php: s = "Pushes 1 byte"; break;
+  case M65816_plb: case M65816_plp: s = "Pulls 1 byte"; break;
+  case M65816_phd: case M65816_pea: case M65816_per: s = "Pushes 2 bytes"; break;
+  case M65816_pld: s = "Pulls 2 bytes"; break;
+  case M65816_pei: s = "Reads 2 bytes at the direct page address and pushes them"; break;
+  case M65816_rts: s = "Pulls the 2-byte return address"; break;
+  case M65816_rtl: s = "Pulls the 3-byte return address"; break;
+  case M65816_rti: s = "Pulls the status and the return address (4 bytes in native mode, 3 in emulation mode)"; break;
+  case M65816_brk: case M65816_cop: s = "Pushes the return address and the status (4 bytes in native mode), reads the 2-byte vector"; break;
+  case M65816_mvn: case M65816_mvp: s = "Reads and writes C+1 bytes, one per iteration"; break;
+  default: break;
+  }
+  if (!s.empty()) {
+    hint->push_back(s);
+    return;
+  }
+
+  // jumps and calls
+  if (insn.itype == M65816_jsr || insn.itype == M65816_jsl || insn.itype == M65816_jmp || insn.itype == M65816_jml) {
+    switch (mode) {
+    case M::Ind: s = "Reads the 2-byte target address at the operand (bank $00)"; break;
+    case M::Ial: s = "Reads the 3-byte target address at the operand (bank $00)"; break;
+    case M::Iax: s = "Reads the 2-byte target address at the operand + X (program bank)"; break;
+    default: break;
+    }
+    if (insn.itype == M65816_jsr) {
+      s.append(s.empty() ? "Pushes the 2-byte return address" : ", pushes the 2-byte return address");
+    }
+    else if (insn.itype == M65816_jsl) {
+      s = "Pushes the 3-byte return address";
+    }
+    if (!s.empty()) {
+      hint->push_back(s);
+    }
+    return;
+  }
+
+  // data operand
+  switch (mode) {
+  case M::Sr: case M::Dp: case M::Dpx: case M::Dpy: case M::Idp: case M::Idx: case M::Idy: case M::Idl: case M::Idly:
+  case M::Isy: case M::Absd: case M::Abx: case M::Aby: case M::Abld: case M::Alx:
+    break;
+  default:
+    return; // immediate, accumulator or no memory operand
+  }
+
+  bool index_reg = false;
+  switch (insn.itype) {
+  case M65816_ldx: case M65816_ldy: case M65816_stx: case M65816_sty: case M65816_cpx: case M65816_cpy:
+    index_reg = true;
+    break;
+  default:
+    break;
+  }
+  int size = index_reg ? (x8 ? 1 : 2) : (m8 ? 1 : 2);
+
+  const char* dir;
+  switch (insn.itype) {
+  case M65816_sta: case M65816_stx: case M65816_sty: case M65816_stz:
+    dir = "Writes";
+    break;
+  case M65816_asl: case M65816_lsr: case M65816_rol: case M65816_ror: case M65816_inc: case M65816_dec:
+  case M65816_trb: case M65816_tsb:
+    dir = "Reads and writes back";
+    break;
+  default:
+    dir = "Reads";
+    break;
+  }
+  s.sprnt("%s %d %s (%s)", dir, size, bytes_word(size), index_reg ? xy_width(x8) : a_width(m8));
+
+  switch (mode) {
+  case M::Idp: case M::Idx: case M::Idy:
+    s.append(" through a 2-byte pointer at the direct page address (data bank)");
+    break;
+  case M::Isy:
+    s.append(" through a 2-byte pointer on the stack (data bank)");
+    break;
+  case M::Idl: case M::Idly:
+    s.append(" through a 3-byte pointer at the direct page address");
+    break;
+  case M::Sr:
+    s.append(" on the stack");
+    break;
+  default:
+    break;
+  }
+  hint->push_back(s);
+}
+
 static const char* known_reg_src_name(known_reg_src_t src) {
   switch (src) {
   case KRS_STATIC: return "derived from the code";
@@ -281,6 +517,15 @@ void describe_insn(const insn_t& insn, qstrvec_t* listing, qstrvec_t* hint) {
   uint16_t v;
   known_reg_src_t src;
   M addrMode = static_cast<M>(insn.insnpref);
+
+  // what the instruction does and the memory it accesses (hint only)
+  if (hint != nullptr) {
+    const char* description = insn_description(insn.itype);
+    if (description != nullptr) {
+      hint->push_back(description);
+    }
+    describe_access(insn, hint);
+  }
 
   switch (insn.itype) {
   case M65816_sep:
@@ -466,7 +711,12 @@ void m65816_t::out_banked_val(outctx_t& ctx, bool analyze_only) {
 
     qstring name;
 
-    ssize_t ln = get_name_expr(&name, ctx.insn_ea, 0, value, BADADDR);
+    ea_t target = op_ref_target(ctx.insn_ea, 0, value);
+    ssize_t ln = get_name_expr(&name, ctx.insn_ea, 0, target, target);
+    adiff_t delta = adiff_t(value - target);
+    if (ln > 0 && delta != 0) {
+      name.cat_sprnt("%c$%X", delta < 0 ? '-' : '+', (uint32)(delta < 0 ? -delta : delta));
+    }
     if (ln <= 0) {
       ctx.out_long(value, 16);
       ctx.flush_outbuf();
@@ -494,7 +744,7 @@ void m65816_t::out_banked_val(outctx_t& ctx, bool analyze_only) {
     ctx.out_line(name.c_str(), COLOR_DREF);
     ctx.flush_outbuf();
 
-    add_dref(ctx.insn_ea, value, dr_O);
+    add_dref(ctx.insn_ea, target, dr_O);
   }
 }
 
