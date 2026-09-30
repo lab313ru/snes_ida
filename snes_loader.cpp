@@ -712,19 +712,27 @@ static void RegisterHandlerWrams() {
 	std::map<uint32_t, ea_t> mirrors = {};
 
 	RegisterHandlerWram(0x7E, 0x7F, 0x0000, 0xFFFF, mirrors);
-	RegisterHandlerWram(0x00, 0x3F, 0x0000, 0x0FFF, mirrors);
-	RegisterHandlerWram(0x80, 0xBF, 0x0000, 0x0FFF, mirrors);
 
-	RegisterHandlerWram(0x00, 0x3F, 0x1000, 0x1FFF, mirrors);
-	RegisterHandlerWram(0x80, 0xBF, 0x1000, 0x1FFF, mirrors);
-
+	// Registers exist once (bank $00, where the register names are set)
 	mirrors.clear();
-	RegisterHandlerRegs(0x00, 0x3F, 0x2000, 0x2FFF, "REGB", mirrors);
-	RegisterHandlerRegs(0x80, 0xBF, 0x2000, 0x2FFF, "REGB", mirrors);
-
+	RegisterHandlerRegs(0x00, 0x00, 0x2000, 0x2FFF, "REGB", mirrors);
 	mirrors.clear();
-	RegisterHandlerRegs(0x00, 0x3F, 0x4000, 0x4FFF, "REGA", mirrors);
-	RegisterHandlerRegs(0x80, 0xBF, 0x4000, 0x4FFF, "REGA", mirrors);
+	RegisterHandlerRegs(0x00, 0x00, 0x4000, 0x4FFF, "REGA", mirrors);
+
+	// Every system bank ($00-$3F, $80-$BF) mirrors the first 8 KB of WRAM ($7E:0000) and the registers of bank $00
+	for (uint32_t bank = 0x00; bank <= 0xBF; bank++) {
+		if (bank >= 0x40 && bank < 0x80) {
+			continue;
+		}
+
+		ea_t base = (ea_t)(bank << 16);
+		add_mapping(base, 0x7E0000, 0x2000);
+
+		if (bank != 0x00) {
+			add_mapping(base + 0x2000, 0x2000, 0x1000);
+			add_mapping(base + 0x4000, 0x4000, 0x1000);
+		}
+	}
 }
 
 static uint32_t CalcHandlersSize(uint32_t _prgRomSize) {
@@ -902,8 +910,8 @@ int idaapi accept_file(qstring* fileformatname, qstring* processor, linput_t* li
 	int res = check_or_load(li, false);
 
 	if (res) {
-		*fileformatname = "SNES ROM";
-		*processor = "m65816";
+		*fileformatname = "SNES ROM (snes_ida)";
+		*processor = "snes816";
 
 		return 1;
 	}
@@ -912,7 +920,7 @@ int idaapi accept_file(qstring* fileformatname, qstring* processor, linput_t* li
 }
 
 void idaapi load_file(linput_t* li, ushort neflags, const char* fileformatname) {
-	set_processor_type("m65816", SETPROC_LOADER);
+	set_processor_type("snes816", SETPROC_LOADER);
 	inf_set_app_bitness(32);
 
 	inf_set_af(0

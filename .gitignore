@@ -3,3 +3,4 @@ releases/**
 snes_ldr/**
 snes_proc/**
 test_sources/**
+build/**

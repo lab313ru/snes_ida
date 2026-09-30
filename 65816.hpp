@@ -191,36 +191,6 @@ inline void ea_del_flags(ea_t ea) {
 	helper.chardel_ea(ea, FLAGS_BITMODE_TAG);
 }
 
-struct switch_bitmode_action_t : public action_handler_t {
-	virtual int idaapi activate(action_activation_ctx_t* ctx) {
-		int can_change_mode = 0;
-		can_change_mode |= can_change_mem_mode(ctx->cur_ea) ? 1 : 0;
-		can_change_mode |= can_change_idx_mode(ctx->cur_ea) ? 2 : 0;
-
-		if (can_change_mode == 0) {
-			return 1;
-		}
-
-		uint8_t flags = ea_get_flags(ctx->cur_ea);
-		
-		if (can_change_mode & 1) {
-			flags ^= m65816_flags::MemoryMode8;
-		}
-		else if (can_change_mode & 2) {
-			flags ^= m65816_flags::IndexMode8;
-		}
-
-		ea_set_flags(ctx->cur_ea, flags);
-		ea_set_manual_bitmode(ctx->cur_ea, true);
-
-		return 1;
-	}
-
-	virtual action_state_t idaapi update(action_update_ctx_t* ctx) {
-		return AST_ENABLE_ALWAYS;
-	}
-};
-
 #define BANK_TAG ('B')
 
 inline ea_t ea_get_bank(ea_t ea) {
@@ -234,6 +204,12 @@ inline void ea_set_bank(ea_t ea, ea_t bank) {
 inline void ea_clr_bank(ea_t ea) {
 	helper.easet(ea, BADADDR, BANK_TAG);
 }
+
+// 24-bit data (reg.cpp): custom data type "d24" and its "number" / "offset" formats
+extern int data24_id;
+extern int data24_num_fid;
+extern int data24_off_fid;
+bool toggle_data24_offset(ea_t ea);
 
 // !!! problems TODO:
 // C18A1A (C18A4F)
@@ -253,6 +229,9 @@ public:
 	set_offset_bank_action_t(set_offset_bank_mode_t mode) : _mode(mode) {}
 
 	virtual int idaapi activate(action_activation_ctx_t* ctx) {
+		if (toggle_data24_offset(ctx->cur_ea)) {
+			return 1; // d24: number <-> offset
+		}
 		ea_clr_bank(ctx->cur_ea);
 
 		int opnum = get_opnum();
@@ -389,13 +368,370 @@ struct set_cust_offset_bank_action_t : public set_offset_bank_action_t {
 	set_cust_offset_bank_action_t() : set_offset_bank_action_t(set_offset_bank_mode_t::SOB_CUSTOM) {}
 };
 
+// Reset handler (target of the vector at $00:FFFC), or BADADDR.
+// After a reset the CPU runs it in emulation mode (M = X = 1) with DB = $00, D = $0000.
+inline ea_t get_reset_vector_target() {
+	ea_t vec = use_mapping(0xFFFC);
+	if (!is_mapped(vec) || !is_mapped(vec + 1)) {
+		return BADADDR;
+	}
+	return use_mapping(get_word(vec));
+}
+
+// The reset state is only certain when no code jumps/calls to the handler (a soft reset could run it in another state)
+inline bool is_reset_entry(ea_t ea) {
+	if (ea != get_reset_vector_target()) {
+		return false;
+	}
+	xrefblk_t xb;
+	return !xb.first_to(ea, XREF_CODE);
+}
+
+// Known data bank (DB) / direct page (D) register values per instruction (value at the start of the instruction).
+// Stored as (source << 24) | (value + 1); 0 = unknown.
+#define DATA_BANK_TAG ('b')
+#define DIRECT_PAGE_TAG ('D')
+#define PROGRAM_BANK_TAG ('k')
+
+enum known_reg_src_t : uint8_t {
+	KRS_NONE = 0,
+	KRS_STATIC = 1, // derived from the code by propagate_known_regs()
+	KRS_CDL = 2,    // Mesen CDL: the instruction always ran with this value
+	KRS_MANUAL = 3, // set by the user (Shift+X)
+	KRS_CDL_SAME_TARGET = 4, // Mesen CDL: DB varied, but every observed value gives the same address for this operand
+	                         // (e.g. $00/$80); used for this instruction only, never propagated
+};
+
+inline bool ea_get_known_reg(ea_t ea, uchar tag, uint16_t* value, known_reg_src_t* src = nullptr) {
+	nodeidx_t v = helper.altval_ea(ea, tag);
+	if (v == 0) {
+		return false;
+	}
+	*value = (uint16_t)((v & 0xFFFFFF) - 1);
+	if (src != nullptr) {
+		uint8_t s = (uint8_t)(v >> 24);
+		*src = (s == KRS_NONE) ? KRS_CDL : (known_reg_src_t)s; // values written without a source came from the CDL plugin
+	}
+	return true;
+}
+
+inline void ea_set_known_reg(ea_t ea, uchar tag, uint16_t value, known_reg_src_t src) {
+	helper.altset_ea(ea, ((nodeidx_t)src << 24) | ((nodeidx_t)value + 1), tag);
+}
+
+inline void ea_del_known_reg(ea_t ea, uchar tag) {
+	helper.altdel_ea(ea, tag);
+}
+
+enum : uint8_t {
+	EKR_DB = 1,
+	EKR_D = 2,
+	EKR_PB = 4,
+};
+
+// Which of DB / D / PB the operand of an instruction depends on (for the reference that is created from it)
+inline uint8_t insn_known_regs_used(ea_t ea) {
+	insn_t insn;
+	if (!is_code(get_flags(ea)) || decode_insn(&insn, ea) <= 0) {
+		return 0;
+	}
+	switch (static_cast<M>(insn.insnpref)) {
+	case M::Absd:
+	case M::Abx:
+	case M::Aby:
+		return insn.itype == M65816_pea ? 0 : EKR_DB;
+	case M::Dp:
+	case M::Dps:
+	case M::Dpx:
+	case M::Dpy:
+	case M::Idp:
+	case M::Idx:
+	case M::Idy:
+	case M::Idl:
+	case M::Idly:
+		return EKR_D; // the operand is the direct page location (a pointer for the indirect modes)
+	case M::Absp:
+	case M::Iax:
+		return EKR_PB; // JMP/JSR abs, JMP/JSR (abs,X)
+	default:
+		return 0;
+	}
+}
+
+// Known DB / D / PB values of an instruction (or of every instruction of a range) edited in one dialog.
+// regs: which fields are shown (EKR_DB / EKR_D / EKR_PB).
+// Values are used from there on along the code flow until the register changes.
+// An empty field clears the manual value. Returns true when something changed.
+inline bool edit_known_regs(ea_t start, ea_t end, bool is_range, uint8_t regs) {
+	struct field_t {
+		uchar tag;
+		uint8_t reg;
+		const char* name;
+		const char* label;
+		uint32_t max;
+		qstring text;
+		qstring orig;
+		bool changed = false;
+		bool clear = false;
+		uint16_t value = 0;
+	};
+	field_t fields[] = {
+		{ DATA_BANK_TAG, EKR_DB, "DB", "<~D~ata bank (DB)    :q:4:6::>\n", 0xFF },
+		{ DIRECT_PAGE_TAG, EKR_D, "D", "<Direct ~p~age (D)   :q:6:6::>\n", 0xFFFF },
+		{ PROGRAM_BANK_TAG, EKR_PB, "PB", "<Pro~g~ram bank (PB) :q:4:6::>\n", 0xFF },
+	};
+
+	qstring info, inputs;
+	qvector<qstring*> args;
+	for (field_t& f : fields) {
+		if ((regs & f.reg) == 0) {
+			continue;
+		}
+		uint16_t v;
+		known_reg_src_t src;
+		if (ea_get_known_reg(start, f.tag, &v, &src)) {
+			f.text.sprnt(f.max == 0xFF ? "%02X" : "%04X", v);
+			info.cat_sprnt("%s=%s: %s\n", f.name, f.text.c_str(),
+				src == KRS_STATIC ? "derived from the code" : src == KRS_CDL ? "Mesen CDL" : src == KRS_MANUAL ? "set manually" :
+				src == KRS_CDL_SAME_TARGET ? "Mesen CDL (varied, same address)" : "");
+		}
+		f.orig = f.text;
+		if (f.text.empty()) {
+			// unknown: suggest DB = $00, D = $0000, PB = the bank of the instruction; confirming sets it manually
+			if (f.reg == EKR_PB) {
+				f.text.sprnt("%02X", (uint32)((start >> 16) & 0xFF));
+			}
+			else {
+				f.text = (f.max == 0xFF) ? "00" : "0000";
+			}
+		}
+		inputs.append(f.label);
+		args.push_back(&f.text);
+	}
+	if (args.empty()) {
+		return false;
+	}
+
+	// field widths include the terminating zero; an optional '$' prefix is accepted
+	qstring form;
+	form.sprnt(
+		"Known register values\n"
+		"\n"
+		"%s, hex. Used from there on until the register changes.\n"
+		"Empty = no manual value.\n"
+		"%s"
+		"\n"
+		"%s"
+		"\n",
+		is_range ? "For every instruction of the selection" : "At this instruction",
+		info.c_str(),
+		inputs.c_str());
+	int res = 0;
+	switch (args.size()) {
+	case 1: res = ask_form(form.c_str(), args[0]); break;
+	case 2: res = ask_form(form.c_str(), args[0], args[1]); break;
+	default: res = ask_form(form.c_str(), args[0], args[1], args[2]); break;
+	}
+	if (res != 1) {
+		return false;
+	}
+
+	for (field_t& f : fields) {
+		if ((regs & f.reg) == 0) {
+			continue;
+		}
+		f.text.trim2();
+		if (f.text == f.orig) {
+			continue; // untouched: keep whatever the instruction has (CDL / derived values stay as they are)
+		}
+		f.changed = true;
+		f.clear = f.text.empty();
+		if (!f.clear) {
+			const char* p = f.text.c_str();
+			if (*p == '$') {
+				p++;
+			}
+			char* endp = nullptr;
+			uint64 value = strtoull(p, &endp, 16);
+			if (endp == p || *endp != '\0' || value > f.max) {
+				warning("Invalid %s value: %s", f.name, f.text.c_str());
+				return false;
+			}
+			f.value = (uint16_t)value;
+		}
+	}
+
+	size_t count = 0;
+	for (ea_t ea = start; ea < end && ea != BADADDR; ea = next_head(ea, end)) {
+		if (!is_code(get_flags(ea))) {
+			continue;
+		}
+		count++;
+		for (field_t& f : fields) {
+			if (!f.changed) {
+				continue;
+			}
+			if (f.clear) {
+				uint16_t v;
+				known_reg_src_t src;
+				if (ea_get_known_reg(ea, f.tag, &v, &src) && src == KRS_MANUAL) {
+					ea_del_known_reg(ea, f.tag);
+				}
+			}
+			else {
+				ea_set_known_reg(ea, f.tag, f.value, KRS_MANUAL);
+			}
+		}
+		plan_ea(ea);
+	}
+
+	bool changed = false;
+	for (field_t& f : fields) {
+		if (!f.changed) {
+			continue;
+		}
+		changed = true;
+		if (f.clear) {
+			msg("%s: manual value cleared on %u instruction(s) at %a\n", f.name, (unsigned)count, start);
+		}
+		else {
+			msg(f.max == 0xFF ? "%s: $%02X set on %u instruction(s) at %a\n" : "%s: $%04X set on %u instruction(s) at %a\n",
+				f.name, (unsigned)f.value, (unsigned)count, start);
+		}
+	}
+	return changed;
+}
+
+// Shift+X: switches the operand size of an immediate operand that depends on M/X,
+// otherwise edits the known DB / D values of the instruction (or of every instruction of the selection).
+struct switch_bitmode_action_t : public action_handler_t {
+	bool* dirty = nullptr;
+
+	virtual int idaapi activate(action_activation_ctx_t* ctx) {
+		ea_t start = ctx->cur_ea;
+		ea_t end = BADADDR;
+		// read_range_selection() alone is not enough: without a selection it may still return an (empty) range
+		bool has_range = ctx->has_flag(ACF_HAS_SELECTION) && ctx->widget != nullptr
+			&& read_range_selection(ctx->widget, &start, &end) && start != BADADDR && start < end;
+		if (!has_range) {
+			start = ctx->cur_ea;
+			end = get_item_end(start);
+		}
+		if (start == BADADDR) {
+			return 1;
+		}
+
+		if (!has_range) {
+			int can_change_mode = 0;
+			can_change_mode |= can_change_mem_mode(start) ? 1 : 0;
+			can_change_mode |= can_change_idx_mode(start) ? 2 : 0;
+
+			if (can_change_mode != 0) {
+				uint8_t flags = ea_get_flags(start);
+				if (can_change_mode & 1) {
+					flags ^= m65816_flags::MemoryMode8;
+				}
+				else {
+					flags ^= m65816_flags::IndexMode8;
+				}
+				ea_set_flags(start, flags);
+				ea_set_manual_bitmode(start, true);
+				return 1;
+			}
+		}
+
+		// only the register the operand depends on; all of them for other instructions and for a selection
+		uint8_t regs = has_range ? 0 : insn_known_regs_used(start);
+		if (regs == 0) {
+			regs = EKR_DB | EKR_D | EKR_PB;
+		}
+		if (edit_known_regs(start, end, has_range, regs) && dirty != nullptr) {
+			*dirty = true;
+		}
+		return 1;
+	}
+
+	virtual action_state_t idaapi update(action_update_ctx_t* ctx) {
+		return AST_ENABLE_ALWAYS;
+	}
+};
+
+// Register info of an instruction (out.cpp): short lines for the listing, long lines for the hint
+void describe_insn(const insn_t& insn, qstrvec_t* listing, qstrvec_t* hint);
+
+// Hint with the register info when the mouse is over an instruction in the disassembly.
+// IDA's own hint (e.g. for a name under the mouse) is kept below it.
+struct reg_hint_listener_t : public event_listener_t {
+	virtual ssize_t idaapi on_event(ssize_t code, va_list va) override {
+		if (code != ui_get_custom_viewer_hint) {
+			return 0;
+		}
+		qstring* hint = va_arg(va, qstring*);
+		TWidget* viewer = va_arg(va, TWidget*);
+		place_t* place = va_arg(va, place_t*);
+		int* important_lines = va_arg(va, int*);
+		if (hint == nullptr || place == nullptr || important_lines == nullptr || get_widget_type(viewer) != BWN_DISASM) {
+			return 0;
+		}
+
+		ea_t ea = place->toea();
+		insn_t insn;
+		if (!is_code(get_flags(ea)) || get_item_head(ea) != ea || decode_insn(&insn, ea) <= 0) {
+			return 0;
+		}
+
+		qstrvec_t lines;
+		describe_insn(insn, nullptr, &lines);
+		if (lines.empty()) {
+			return 0;
+		}
+
+		for (const qstring& line : lines) {
+			hint->append(line);
+			hint->append('\n');
+			(*important_lines)++;
+		}
+		if (hint->find(REG_HINTS_MARKER) == qstring::npos) {
+			hint->append(REG_HINTS_MARKER);
+		}
+		return 0;
+	}
+};
+
+// Static DB/D propagation (dbdp.cpp). Returns the number of instructions whose derived values changed.
+size_t propagate_known_regs();
+
+// M/X corrections when the code flow runs into an opcode the ROM doesn't use (mxfix.cpp).
+// Returns true when the code was changed.
+bool fix_mx_conflicts(std::set<ea_t>& conflicts, ushort idpflags);
+
+struct m65816_t;
+
+// Work done when the auto-analysis queues are empty (m65816_t::on_auto_idle): resolves the M/X conflicts found
+// meanwhile, then runs the DB/D propagation if the code changed since the last run. Changed instructions are
+// reanalysed and this runs again after that analysis, until nothing changes anymore.
+// Triggered by idb_event::auto_empty (initial analysis) and by a UI timer (any later change).
+struct known_regs_listener_t : public event_listener_t {
+	m65816_t* pm = nullptr;
+
+	virtual ssize_t idaapi on_event(ssize_t code, va_list va) override;
+};
+
+int idaapi known_regs_timer_cb(void* ud);
+
 struct m65816_t : public procmod_t {
 #define ROM_NO_BRK 0x01
 #define ROM_NO_COP 0x02
 #define ROM_NO_WDM 0x04
+#define SHOW_REG_CMTS 0x08 // register info as listing comments (it is always available as a hint)
 	ushort idpflags = ROM_NO_BRK | ROM_NO_COP | ROM_NO_WDM;
 
-	int addr24_id, addr24_fid;
+	bool in_data24_repr = false; // guards against the events caused by apply_data24_repr()
+	void ensure_data24_typedef();
+	std::set<ea_t> new_tbytes; // 3-byte tbytes just created (D): turned into d24 when the analysis is idle
+	void convert_new_tbytes();
+	void setup_data_carousel();
+	void apply_data24_repr(const char* udtname);
 
 	switch_bitmode_action_t switch_bitmode;
 	set_cur_offset_bank_action_t set_cur_offset_bank;
@@ -404,12 +740,23 @@ struct m65816_t : public procmod_t {
 	set_zero_offset_bank_action_t set_zero_offset_bank;
 	set_cust_offset_bank_action_t set_cust_offset_bank;
 
-	action_desc_t switch_bitmode_action = ACTION_DESC_LITERAL_PROCMOD(switch_bitmode_action_name, "Switch flag", &switch_bitmode, this, "Shift+X", NULL, -1);
+	action_desc_t switch_bitmode_action = ACTION_DESC_LITERAL_PROCMOD(switch_bitmode_action_name, "Switch flag / set DB, D", &switch_bitmode, this, "Shift+X", NULL, -1);
 	action_desc_t set_cur_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_cur_offset_bank_action_name, "Change bank to current", &set_cur_offset_bank, this, "O", NULL, -1);
 	action_desc_t set_sel_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_sel_offset_bank_action_name, "Change bank to selected", &set_sel_offset_bank, this, "Ctrl+O", NULL, -1);
 	action_desc_t set_wram_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_wram_offset_bank_action_name, "Change bank to WRAM", &set_wram_offset_bank, this, "Shift+O", NULL, -1);
 	action_desc_t set_zero_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_zero_offset_bank_action_name, "Change bank to ZERO", &set_zero_offset_bank, this, "Ctrl+Shift+O", NULL, -1);
 	action_desc_t set_cust_offset_bank_action = ACTION_DESC_LITERAL_PROCMOD(set_cust_offset_bank_action_name, "Change bank to custom", &set_cust_offset_bank, this, "Ctrl+Alt+O", NULL, -1);
+
+
+	// set when code changed since the last DB/D propagation
+	bool known_regs_dirty = true;
+	known_regs_listener_t known_regs_listener;
+	// instructions the code flow reached but which are opcodes the ROM doesn't use (see mxfix.cpp)
+	std::set<ea_t> mx_conflicts;
+	void note_mx_conflict(ea_t ea);
+	qtimer_t idle_timer = nullptr;
+	void on_auto_idle();
+	reg_hint_listener_t reg_hint_listener;
 
 	bool recurse_ana = false;
 	
@@ -422,9 +769,115 @@ struct m65816_t : public procmod_t {
   void m65816_data(outctx_t& ctx, bool analyze_only);
 	void out_banked_val(outctx_t& ctx, bool analyze_only);
 
-	void save_idpflags() { helper.altset(-1, idpflags); }
-	void load_from_idb() { (ushort)helper.altval(-1); }
+	// bit 15 marks that the options were saved (altval returns 0 when nothing was stored)
+	void save_idpflags() { helper.altset(-1, idpflags | 0x8000); }
+	void load_from_idb() {
+		nodeidx_t v = helper.altval(-1);
+		if (v & 0x8000) {
+			idpflags = (ushort)(v & ~0x8000);
+		}
+	}
 };
+
+// Bank + 16-bit address -> ea of the accessed memory, or BADADDR
+inline ea_t get_data_target(uint32_t bank, uint32_t addr) {
+	bool system_bank = bank < 0x40 || (bank >= 0x80 && bank < 0xC0);
+	if (system_bank && addr < 0x2000) {
+		ea_t ea = 0x7E0000 + addr; // first 8 KB of WRAM, mirrored in every system bank
+		return is_mapped(ea) ? ea : BADADDR;
+	}
+	ea_t ea = use_mapping((ea_t)((bank << 16) | addr));
+	return is_mapped(ea) ? ea : BADADDR;
+}
+
+// 16-bit code address used with the program bank (JMP/JSR abs, JMP/JSR (abs,X)): the target depends on the bank the
+// code runs from. With a known PB it is certain; otherwise it is certain only when it is the same for every CPU bank
+// the code can run from (its own bank and the mirrors mapped to it), e.g. HiROM code at $C0:D257 also runs as
+// $80:D257, where "JSR $00CF" calls WRAM $7E:00CF instead of $C0:00CF.
+enum pb_target_t {
+	PBT_CERTAIN,   // *target is the ea of the target
+	PBT_UNMAPPED,  // certain, but nothing is mapped there
+	PBT_AMBIGUOUS, // depends on the unknown program bank
+};
+
+inline pb_target_t get_pb_target(ea_t insn_ea, uint32_t addr16, ea_t* target) {
+	uint16_t pb;
+	if (ea_get_known_reg(insn_ea, PROGRAM_BANK_TAG, &pb)) {
+		*target = get_data_target(pb & 0xFF, addr16);
+		return *target != BADADDR ? PBT_CERTAIN : PBT_UNMAPPED;
+	}
+
+	uint32_t low = (uint32_t)(insn_ea & 0xFFFF);
+	bool first = true;
+	ea_t result = BADADDR;
+	for (uint32_t bank = 0; bank < 0x100; bank++) {
+		ea_t cpu = (ea_t)((bank << 16) | low);
+		if (cpu != insn_ea && use_mapping(cpu) != insn_ea) {
+			continue; // the code can't run from this bank
+		}
+		ea_t t = get_data_target(bank, addr16);
+		if (first) {
+			result = t;
+			first = false;
+		}
+		else if (t != result) {
+			return PBT_AMBIGUOUS;
+		}
+	}
+	*target = result;
+	return result != BADADDR ? PBT_CERTAIN : PBT_UNMAPPED;
+}
+
+// Data operand referenced automatically, without pressing O - only when the accessed address is certain:
+//  - abs/abs,X/abs,Y: the data bank is known for the instruction (DB tag: CDL, manual or derived from the code)
+//  - direct page modes: the direct page register is known (D tag)
+//  - long addresses: always (the address is complete)
+// An explicit bank (O) or a representation chosen by the user (offset, number...) wins.
+inline bool get_auto_data_ref(const insn_t& insn, const op_t& x, ea_t* target) {
+	if (x.type != o_mem || is_defarg(get_flags(insn.ea), x.n) || ea_get_bank(insn.ea) != BADADDR) {
+		return false;
+	}
+
+	ea_t ea = BADADDR;
+	uint16_t v;
+	M addrMode = static_cast<M>(insn.insnpref);
+	switch (addrMode) {
+	case M::Absd:
+	case M::Abx:
+	case M::Aby: {
+		if (insn.itype == M65816_pea || !ea_get_known_reg(insn.ea, DATA_BANK_TAG, &v)) {
+			return false;
+		}
+		ea = get_data_target(v & 0xFF, (uint32_t)x.addr & 0xFFFF);
+	} break;
+	case M::Dp:
+	case M::Dps:
+	case M::Dpx:
+	case M::Dpy:
+	case M::Idp:
+	case M::Idx:
+	case M::Idy:
+	case M::Idl:
+	case M::Idly: {
+		if (!ea_get_known_reg(insn.ea, DIRECT_PAGE_TAG, &v)) {
+			return false;
+		}
+		ea = get_data_target(0, (uint16_t)(v + (x.addr & 0xFF)));
+	} break;
+	case M::Abld:
+	case M::Alx: {
+		ea = get_data_target((uint32_t)(x.addr >> 16) & 0xFF, (uint32_t)x.addr & 0xFFFF);
+	} break;
+	default:
+		return false;
+	}
+
+	if (ea == BADADDR) {
+		return false;
+	}
+	*target = ea;
+	return true;
+}
 
 inline void add_op_possible_dref(ea_t addr, const op_t& x, const insn_t& insn, bool ref_anyway) {
 	ea_t ea = use_mapping(addr);

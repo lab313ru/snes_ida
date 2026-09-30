@@ -22,6 +22,11 @@ void out_m65816_t::out_byte_word(const op_t& x, bool is_byte) {
 }
 
 void out_m65816_t::out_byte_or_off(const op_t& x, bool ref_anyway) {
+  ea_t target;
+  if (get_auto_data_ref(insn, x, &target) && out_name_expr(x, target, target)) {
+    return;
+  }
+
   ea_t ea = use_mapping(x.addr);
   if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
     return;
@@ -44,6 +49,16 @@ void out_m65816_t::out_byteword_or_off(const op_t& x, bool ref_anyway) {
 }
 
 void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
+  if (x.type == o_near && x.specflag1 != 0) {
+    out_byte_word(x, false); // the target depends on an unknown program bank
+    return;
+  }
+
+  ea_t target;
+  if (get_auto_data_ref(insn, x, &target) && out_name_expr(x, target, target)) {
+    return;
+  }
+
   ea_t ea = use_mapping(x.addr);
   if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
     return;
@@ -54,6 +69,11 @@ void out_m65816_t::out_word_or_off(const op_t& x, bool ref_anyway) {
 }
 
 void out_m65816_t::out_24bit_or_off(const op_t& x, bool ref_anyway) {
+  ea_t target;
+  if (get_auto_data_ref(insn, x, &target) && out_name_expr(x, target, target)) {
+    return;
+  }
+
   ea_t ea = use_mapping(x.addr);
   if ((ref_anyway && out_name_expr(x, ea)) || (op_adds_xrefs(F, x.n) && out_name_expr(x, ea))) {
     return;
@@ -146,14 +166,14 @@ bool out_m65816_t::out_operand(const op_t& x) {
     out_register("Y");
   } break;
   case M::Absd: { // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
-    out_word_or_off(x, read_access);
+    out_word_or_off(x, false); // a name only when the bank is known (DB value or O)
   } break;
   case M::Absp: { // $0000 - Uses Program bank for jumps (opcodes: $4C/JMP, $20/JSR)
     out_word_or_off(x, read_access);
   } break;
   case M::Abx: // $0000,X - Uses Data bank (opcodes: $BC/LDY, $3C/BIT, $FD/SBC, $DD/CMP, $BD/LDA, $9D/STA, $7D/ADC, $5D/EOR, $3D/AND, $1D/ORA, $FE/INC, $DE/DEC, $9E/STZ, $7E/ROR, $5E/LSR, $3E/ROL, $1E/ASL)
   case M::Aby: { // $0000,Y - Uses Data bank (opcodes: $BE/LDX, $F9/SBC, $D9/CMP, $B9/LDA, $99/STA, $79/ADC, $59/EOR, $39/AND, $19/ORA)
-    out_word_or_off(x, read_access);
+    out_word_or_off(x, false); // a name only when the bank is known (DB value or O)
     out_symbol(',');
     out_register((addrMode == M::Abx) ? "X" : "Y");
   } break;
@@ -236,6 +256,157 @@ void out_m65816_t::out_proc_mnem(void) {
   out_mnem(8, postfix);
 }
 
+static const char* known_reg_src_name(known_reg_src_t src) {
+  switch (src) {
+  case KRS_STATIC: return "derived from the code";
+  case KRS_CDL: return "Mesen CDL";
+  case KRS_MANUAL: return "set manually";
+  case KRS_CDL_SAME_TARGET: return "Mesen CDL: varied, same address for all values";
+  default: return "";
+  }
+}
+
+// Register information of an instruction: short form for the listing comments (a8/a16, i8/i16, DB/D values),
+// long form for the hint shown when the mouse is over the instruction. Either output may be nullptr.
+void describe_insn(const insn_t& insn, qstrvec_t* listing, qstrvec_t* hint) {
+  auto add = [&](const qstring& short_text, const qstring& long_text) {
+    if (listing != nullptr && !short_text.empty()) {
+      listing->push_back(short_text);
+    }
+    if (hint != nullptr && !long_text.empty()) {
+      hint->push_back(long_text);
+    }
+  };
+  qstring s, l;
+  uint16_t v;
+  known_reg_src_t src;
+  M addrMode = static_cast<M>(insn.insnpref);
+
+  switch (insn.itype) {
+  case M65816_sep:
+  case M65816_rep: {
+    bool rep = insn.itype == M65816_rep;
+    uint8_t flags = (uint8_t)insn.Op1.value;
+    bool m = (flags & m65816_flags::MemoryMode8) != 0;
+    bool x = (flags & m65816_flags::IndexMode8) != 0;
+    if (m || x) {
+      s.sprnt("%s%s%s", m ? (rep ? "a16" : "a8") : "", (m && x) ? " " : "", x ? (rep ? "i16" : "i8") : "");
+      l.sprnt("From here:%s%s", m ? (rep ? " 16-bit accumulator (a16)" : " 8-bit accumulator (a8)") : "",
+        x ? (rep ? (m ? ", 16-bit index registers (i16)" : " 16-bit index registers (i16)") : (m ? ", 8-bit index registers (i8)" : " 8-bit index registers (i8)")) : "");
+      add(s, l);
+    }
+    return;
+  }
+  case M65816_plb:
+    if (ea_get_known_reg(insn.ea + insn.size, DATA_BANK_TAG, &v)) {
+      s.sprnt("DB<-$%02X", v & 0xFF);
+      l.sprnt("DB <- stack: $%02X", v & 0xFF);
+    }
+    else {
+      s = "DB<-stack";
+      l = "DB <- stack (value unknown)";
+    }
+    add(s, l);
+    return;
+  case M65816_pld:
+  case M65816_tcd: {
+    const char* from = insn.itype == M65816_pld ? "stack" : "C";
+    if (ea_get_known_reg(insn.ea + insn.size, DIRECT_PAGE_TAG, &v)) {
+      s.sprnt("D<-$%04X", v);
+      l.sprnt("D <- %s: $%04X", from, v);
+    }
+    else {
+      s.sprnt("D<-%s", from);
+      l.sprnt("D <- %s (value unknown)", from);
+    }
+    add(s, l);
+    return;
+  }
+  default:
+    break;
+  }
+
+  if (can_change_idx_mode(insn.ea)) {
+    bool x8 = (ea_get_flags(insn.ea) & m65816_flags::IndexMode8) != 0;
+    s = x8 ? "i8 [Shift+X]" : "i16 [Shift+X]";
+    l.sprnt("%s immediate operand: X flag = %d (Shift+X switches)", x8 ? "8-bit" : "16-bit", x8 ? 1 : 0);
+    add(s, l);
+    return;
+  }
+  if (can_change_mem_mode(insn.ea)) {
+    bool m8 = (ea_get_flags(insn.ea) & m65816_flags::MemoryMode8) != 0;
+    s = m8 ? "a8 [Shift+X]" : "a16 [Shift+X]";
+    l.sprnt("%s immediate operand: M flag = %d (Shift+X switches)", m8 ? "8-bit" : "16-bit", m8 ? 1 : 0);
+    add(s, l);
+    return;
+  }
+
+  switch (addrMode) {
+  case M::Dp:
+  case M::Dpx:
+  case M::Dpy:
+  case M::Idp:
+  case M::Idx:
+  case M::Idy:
+  case M::Idl:
+  case M::Idly:
+    if (ea_get_known_reg(insn.ea, DIRECT_PAGE_TAG, &v, &src)) {
+      s.sprnt("D=$%04X [Shift+X]", v);
+      l.sprnt("D = $%04X (%s). Shift+X to change", v, known_reg_src_name(src));
+    }
+    else {
+      s = "D=? [Shift+X]";
+      l = "D unknown: the operand is not referenced. Shift+X to set";
+    }
+    add(s, l);
+    break;
+  case M::Absd:
+  case M::Abx:
+  case M::Aby:
+    if (insn.itype == M65816_pea) {
+      break;
+    }
+    if (ea_get_known_reg(insn.ea, DATA_BANK_TAG, &v, &src)) {
+      s.sprnt("DB=$%02X%s [Shift+X]", v & 0xFF, src == KRS_CDL_SAME_TARGET ? " (same addr)" : "");
+      l.sprnt("DB = $%02X (%s). Shift+X to change", v & 0xFF, known_reg_src_name(src));
+    }
+    else {
+      s = "DB=? [Shift+X]";
+      l = "DB unknown: the operand is not referenced. Shift+X to set";
+    }
+    if (ea_get_bank(insn.ea) != BADADDR) {
+      l.append("\nBank of the operand chosen with O");
+    }
+    add(s, l);
+    break;
+  case M::Absp:
+  case M::Iax:
+    // the target of JMP/JSR abs and JMP/JSR (abs,X) depends on the program bank
+    if (ea_get_bank(insn.ea) != BADADDR) {
+      break; // bank chosen with O
+    }
+    if (ea_get_known_reg(insn.ea, PROGRAM_BANK_TAG, &v, &src)) {
+      s.sprnt("PB=$%02X%s [Shift+X]", v & 0xFF, src == KRS_CDL_SAME_TARGET ? " (same addr)" : "");
+      l.sprnt("PB = $%02X (%s). Shift+X to change", v & 0xFF, known_reg_src_name(src));
+      add(s, l);
+    }
+    else if (insn.Op1.specflag1 != 0) {
+      s = "PB=? [Shift+X]";
+      l = "PB unknown: the target depends on the bank the code runs from and is not referenced. Shift+X to set";
+      add(s, l);
+    }
+    break;
+  case M::Bm:
+    s = "X->Y, C+1 bytes";
+    l.sprnt("Block move: C+1 bytes from $%02X:X to $%02X:Y, DB <- $%02X",
+      (uint32)(insn.Op1.value & 0xFF), (uint32)(insn.Op2.value & 0xFF), (uint32)(insn.Op2.value & 0xFF));
+    add(s, l);
+    break;
+  default:
+    break;
+  }
+}
+
 void out_m65816_t::out_insn(void) {
   out_mnemonic();
   out_one_operand(0);
@@ -245,94 +416,16 @@ void out_m65816_t::out_insn(void) {
     out_one_operand(1);
   }
 
-  char buf[64];
+  char buf[96];
 
-  switch (insn.itype) {
-  case M65816_sep:
-  case M65816_rep: {
-    int val = (insn.itype == M65816_rep) ? 0 : 1;
-    uint8_t flags = (uint8_t)insn.Op1.value;
-
-    int change_mode = 0;
-    change_mode |= (flags & m65816_flags::MemoryMode8) ? 1 : 0;
-    change_mode |= (flags & m65816_flags::IndexMode8) ? 2 : 0;
-
-    if (change_mode == 1) {
-      qsnprintf(buf, sizeof(buf), COLSTR(" %s P.m=>%d", SCOLOR_AUTOCMT), ash.cmnt, val);
+  // Register info as short comments, only when enabled in the processor options (otherwise it is shown as a hint)
+  if ((pm().idpflags & SHOW_REG_CMTS) != 0 && (insn.itype == M65816_sep || insn.itype == M65816_rep || !has_cmt(F))) {
+    qstrvec_t lines;
+    describe_insn(insn, &lines, nullptr);
+    for (const qstring& line : lines) {
+      qsnprintf(buf, sizeof(buf), COLSTR(" %s %s", SCOLOR_AUTOCMT), ash.cmnt, line.c_str());
       out_line(buf);
     }
-    else if (change_mode == 2) {
-      qsnprintf(buf, sizeof(buf), COLSTR(" %s P.x=>%d", SCOLOR_AUTOCMT), ash.cmnt, val);
-      out_line(buf);
-    }
-    else if (change_mode == 3) {
-      qsnprintf(buf, sizeof(buf), COLSTR(" %s P.m=>%d, P.x=>%d", SCOLOR_AUTOCMT), ash.cmnt, val, val);
-      out_line(buf);
-    }
-  } break;
-  default: {
-    if (has_cmt(F)) {
-      break;
-    }
-
-    if (can_change_idx_mode(insn.ea)) {
-      uint8_t flags = ea_get_flags(insn.ea);
-      qsnprintf(buf, sizeof(buf),
-        COLSTR(" %s P.x=%d (press Shift+X to change)", SCOLOR_AUTOCMT), ash.cmnt, (flags & m65816_flags::IndexMode8) ? 1 : 0
-      );
-      out_line(buf);
-    }
-    else if (can_change_mem_mode(insn.ea)) {
-      uint8_t flags = ea_get_flags(insn.ea);
-      qsnprintf(buf, sizeof(buf),
-        COLSTR(" %s P.m=%d (press Shift+X to change)", SCOLOR_AUTOCMT), ash.cmnt, (flags & m65816_flags::MemoryMode8) ? 1 : 0
-      );
-      out_line(buf);
-    }
-    else {
-      switch (insn.itype) {
-      case M65816_plb: {
-        qsnprintf(buf, sizeof(buf), COLSTR(" %s Stack -> Data Bank Reg", SCOLOR_AUTOCMT), ash.cmnt);
-        out_line(buf);
-      } break;
-      case M65816_pld: {
-        qsnprintf(buf, sizeof(buf), COLSTR(" %s Stack -> Direct Page Reg", SCOLOR_AUTOCMT), ash.cmnt);
-        out_line(buf);
-      } break;
-      case M65816_tcd: {
-        qsnprintf(buf, sizeof(buf), COLSTR(" %s ACC -> Direct Page Reg", SCOLOR_AUTOCMT), ash.cmnt);
-        out_line(buf);
-      } break;
-      default: {
-        M addrMode = static_cast<M>(insn.insnpref);
-
-        switch (addrMode) {
-        case M::Dp:
-        case M::Dpx:
-        case M::Dpy:
-        case M::Idp:
-        case M::Idx:
-        case M::Idy:
-        case M::Idl:
-        case M::Idly: {
-          qsnprintf(buf, sizeof(buf), COLSTR(" %s Uses Direct Page Reg", SCOLOR_AUTOCMT), ash.cmnt);
-          out_line(buf);
-        } break;
-        case M::Absd:
-        case M::Abx:
-        case M::Aby: {
-          qsnprintf(buf, sizeof(buf), COLSTR(" %s Uses Data Bank Reg", SCOLOR_AUTOCMT), ash.cmnt);
-          out_line(buf);
-        } break;
-        case M::Bm: {
-          qsnprintf(buf, sizeof(buf), COLSTR(" %s Src(X),Dst(Y) [ACC.W]", SCOLOR_AUTOCMT), ash.cmnt);
-          out_line(buf);
-        } break;
-        }
-      } break;
-      }
-    }
-  } break;
   }
 
   flush_outbuf();

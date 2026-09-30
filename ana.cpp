@@ -95,6 +95,18 @@ static bool is_cref_itype(const insn_t& insn) {
   }
 }
 
+// The ordinary code flow reached an opcode the ROM doesn't use: the operand size of a previous instruction is
+// probably wrong. Resolved when the auto-analysis is finished (mxfix.cpp).
+void m65816_t::note_mx_conflict(ea_t ea) {
+  xrefblk_t xb;
+  for (bool ok = xb.first_to(ea, XREF_CODE); ok; ok = xb.next_to()) {
+    if (xb.type == fl_F) {
+      mx_conflicts.insert(ea);
+      return;
+    }
+  }
+}
+
 int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   if (_insn == NULL) {
     return 0;
@@ -106,16 +118,19 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
 
   if ((idpflags & ROM_NO_BRK) && (opCode == 0x00)) {
     forget_problem(PR_DISASM, insn.ea);
+    note_mx_conflict(insn.ea);
     return 0;
   }
 
   if ((idpflags & ROM_NO_COP) && (opCode == 0x02)) {
     forget_problem(PR_DISASM, insn.ea);
+    note_mx_conflict(insn.ea);
     return 0;
   }
 
   if ((idpflags & ROM_NO_WDM) && (opCode == 0x42)) {
     forget_problem(PR_DISASM, insn.ea);
+    note_mx_conflict(insn.ea);
     return 0;
   }
 
@@ -181,10 +196,28 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
   case M::Iax: // ($0000,X) - uses Program bank (opcodes: $FC/JSR, $7C/JMP)
   case M::Absp: {// $0000 - Uses Program bank for jumps (opcodes: $4C/JMP, $20/JSR)
     insn.Op1.type = o_near;
-    insn.Op1.addr = insn.Op1.value = (ea_bank == BADADDR) ? ((insn.ea & 0xFF0000) | opAddr) : opAddr;
     insn.Op1.dtype = dtype;
+    insn.Op1.specflag1 = 0;
 
-    if (!is_mapped(use_mapping(insn.Op1.addr))) {
+    if (ea_bank != BADADDR) { // bank chosen with O
+      insn.Op1.addr = insn.Op1.value = opAddr;
+      if (!is_mapped(use_mapping(insn.Op1.addr))) {
+        return 0;
+      }
+      break;
+    }
+
+    ea_t target;
+    switch (get_pb_target(insn.ea, opAddr & 0xFFFF, &target)) {
+    case PBT_CERTAIN:
+      insn.Op1.addr = insn.Op1.value = target;
+      break;
+    case PBT_AMBIGUOUS:
+      // the target depends on the program bank: shown as a number, no reference
+      insn.Op1.addr = insn.Op1.value = opAddr & 0xFFFF;
+      insn.Op1.specflag1 = 1;
+      break;
+    default:
       return 0;
     }
   } break;
@@ -253,6 +286,17 @@ int idaapi m65816_t::ana(insn_t* _insn) { // SnesDisUtils.cpp / Mesen2
       recurse_ana = true;
       ana(&insn);
       recurse_ana = false;
+    }
+    else if (is_reset_entry(insn.ea)) {
+      // after a reset the CPU is in emulation mode: 8-bit accumulator and index registers
+      uint8_t flags = ((m65816_flags::MemoryMode8 | m65816_flags::IndexMode8) & prev_mask) | cur_flags;
+      if (ea_get_flags(insn.ea) != flags) {
+        ea_set_flags(insn.ea, flags);
+
+        recurse_ana = true;
+        ana(&insn);
+        recurse_ana = false;
+      }
     }
   } break;
   }

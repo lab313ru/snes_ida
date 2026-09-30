@@ -26,10 +26,16 @@
     <ClCompile Include="ana.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="dbdp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="emu.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ins.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="mxfix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="out.cpp">

@@ -93,8 +93,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ana.cpp" />
+    <ClCompile Include="dbdp.cpp" />
     <ClCompile Include="emu.cpp" />
     <ClCompile Include="ins.cpp" />
+    <ClCompile Include="mxfix.cpp" />
     <ClCompile Include="out.cpp" />
     <ClCompile Include="reg.cpp" />
   </ItemGroup>

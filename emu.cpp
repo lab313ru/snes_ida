@@ -9,6 +9,13 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
   case o_mem: {
     M addrMode = static_cast<M>(insn.insnpref);
 
+    ea_t target;
+    if (get_auto_data_ref(insn, x, &target)) {
+      // only the reference: the size of the accessed data is not known for sure
+      insn.add_dref(target, x.offb, read_access ? dr_R : dr_W);
+      break;
+    }
+
     switch (addrMode) {
     case M::Sr: // $00,S - by stack (opcodes: $E3/SBC, $C3/CMP, $A3/LDA, $83/STA, $63/ADC, $43/EOR, $23/AND, $03/ORA)
     case M::Dpx: // $00,X - direct page reg
@@ -25,15 +32,20 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
     } break;
     case M::Abx: // $0000,X - Uses Data bank (opcodes: $BC/LDY, $3C/BIT, $FD/SBC, $DD/CMP, $BD/LDA, $9D/STA, $7D/ADC, $5D/EOR, $3D/AND, $1D/ORA, $FE/INC, $DE/DEC, $9E/STZ, $7E/ROR, $5E/LSR, $3E/ROL, $1E/ASL)
     case M::Aby: // $0000,Y - Uses Data bank (opcodes: $BE/LDX, $F9/SBC, $D9/CMP, $B9/LDA, $99/STA, $79/ADC, $59/EOR, $39/AND, $19/ORA)
+    case M::Absd: { // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
+      // the bank is unknown here (no DB value, no O): reference only on the user's request
+      add_op_possible_dref(x.addr, x, insn, false);
+    } break;
     case M::Alx: // $000000,X - absolute (opcodes: $FF/SBC, $DF/CMP, $BF/LDA, $9F/STA, $7F/ADC, $5F/EOR, $3F/AND, $1F/ORA)
-    case M::Absd: // $0000 - Uses Data bank (opcodes: $EC/CPX, $CC/CPY, $AC/LDY, $$9C/STZ, $8C/STY, $2C/BIT, $1C/TRB, $0C/TSB, $ED/SBC, $CD/CMP, $AD/LDA, $8D/STA, $6D/ADC, $4D/EOR, $2D/AND, $0D/ORA, $EE/INC, $CE/DEC, $AE/LDX, $8E/STX, $6E/ROR, $4E/LSR, $2E/ROL, $0E/ASL)
     case M::Abld: { // $000000 - absolute ref (opcodes: $EF/SBC, $CF/CMP, $AF/LDA, $8F/STA, $6F/ADC, $4F/EOR, $2F/AND, $0F/ORA)
       add_op_possible_dref(x.addr, x, insn, read_access);
     } break;
     }
   } break;
   case o_near: {
-    add_op_cref(x.addr, x, insn);
+    if (x.specflag1 == 0) { // specflag1: the target depends on an unknown program bank
+      add_op_cref(x.addr, x, insn);
+    }
   } break;
   case o_imm: {
     set_immd(insn.ea);
@@ -43,6 +55,8 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
 }
 
 int m65816_t::emu(const insn_t& insn) {
+  known_regs_dirty = true;
+
   uint32_t feature = insn.get_canon_feature(ph);
 
   if (feature & CF_USE1) {
