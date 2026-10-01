@@ -265,6 +265,12 @@ extern int data24_id;
 extern int data24_num_fid;
 extern int data24_off_fid;
 bool toggle_data24_offset(ea_t ea);
+bool create_data24_offset(ea_t ea);
+bool search_immediate_action(const char* name);
+
+// C (emu.cpp): the code created from the cursor is followed through addresses IDA marked as "not code"
+// when code was undefined there (U) before
+void note_user_code(ea_t ea);
 bool toggle_data24_type_member(const til_type_ref_t* ref);
 
 // !!! problems TODO:
@@ -292,6 +298,9 @@ public:
 		}
 		if (toggle_data24_offset(ctx->cur_ea)) {
 			return 1; // d24: number <-> offset
+		}
+		if (create_data24_offset(ctx->cur_ea)) {
+			return 1; // unexplored bytes: d24 offset
 		}
 		ea_clr_bank(ctx->cur_ea);
 
@@ -815,6 +824,15 @@ void describe_insn(const insn_t& insn, qstrvec_t* listing, qstrvec_t* hint);
 // IDA's own hint (e.g. for a name under the mouse) is kept below it.
 struct reg_hint_listener_t : public event_listener_t {
 	virtual ssize_t idaapi on_event(ssize_t code, va_list va) override {
+		if (code == ui_preprocess_action) {
+			const char* name = va_arg(va, const char*);
+			if (name != nullptr && strcmp(name, "MakeCode") == 0) {
+				note_user_code(get_screen_ea());
+				return 0;
+			}
+			// Alt+I / Ctrl+I: any 3 bytes forming the value are searched too (reg.cpp)
+			return search_immediate_action(name) ? 1 : 0;
+		}
 		if (code != ui_get_custom_viewer_hint) {
 			return 0;
 		}

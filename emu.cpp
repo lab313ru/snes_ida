@@ -1,5 +1,24 @@
 #include "65816.hpp"
 
+// U on code makes IDA mark the address as "not code" (AFL_NOTCODE): the auto-analysis doesn't create code there
+// anymore, so C on code before such an address stops at it, while P (a function) goes on. The instructions created
+// from the address C was pressed at are followed here: "not code" is cleared on their next instruction and on
+// the targets of their relative branches.
+static std::set<ea_t> user_code_flow;
+
+void note_user_code(ea_t ea) {
+  user_code_flow.clear();
+  if (ea != BADADDR) {
+    user_code_flow.insert(ea);
+  }
+}
+
+static void follow_user_code(ea_t ea) {
+  if (user_code_flow.size() < 10000 && user_code_flow.insert(ea).second && is_notcode(ea)) {
+    clr_notcode(ea);
+  }
+}
+
 void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& insn) {
   switch (x.type) {
   case o_void:
@@ -98,6 +117,16 @@ int m65816_t::emu(const insn_t& insn) {
   }
   if (feature & CF_CHG2) {
     handle_operand(insn.Op2, false, insn);
+  }
+
+  if (user_code_flow.erase(insn.ea) != 0) {
+    if ((feature & CF_STOP) == 0) {
+      follow_user_code(insn.ea + insn.size);
+    }
+    M mode = static_cast<M>(insn.insnpref);
+    if ((mode == M::Rel || mode == M::Rell) && insn.Op1.type == o_near && insn.Op1.specflag1 == 0) {
+      follow_user_code(use_mapping(op_full_addr(insn, insn.Op1)));
+    }
   }
 
   if ((feature & CF_STOP) == 0) {

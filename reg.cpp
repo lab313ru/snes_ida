@@ -1,5 +1,7 @@
 #include "65816.hpp"
 #include <typeinf.hpp>
+#include <search.hpp>
+#include <algorithm>
 
 int data_id;
 
@@ -398,6 +400,212 @@ bool toggle_data24_offset(ea_t ea) {
     return true;
   }
   return false;
+}
+
+// O on unexplored bytes: a d24 offset there (instead of IDA's 4-byte offset). Returns false when the 3 bytes at ea
+// are not all unexplored.
+bool create_data24_offset(ea_t ea) {
+  if (data24_id <= 0 || data24_off_fid <= 0) {
+    return false;
+  }
+  for (ea_t a = ea; a < ea + 3; a++) {
+    if (!is_mapped(a) || !is_unknown(get_flags(a))) {
+      return false;
+    }
+  }
+  if (!create_custdata(ea, 3, data24_id, data24_off_fid)) {
+    return false;
+  }
+  plan_range(ea, ea + 3);
+  msg("%a: 24-bit offset\n", ea);
+  return true;
+}
+
+// Alt+I / Ctrl+I (search for an immediate value): IDA's find_imm() compares only the values of instructions and of
+// standard data items (byte, word, dword, qword), so any 3 bytes forming the value (little endian) are searched too,
+// whatever is defined there, and both results are merged. The value of another bank addressing the same memory
+// (a mirror) is searched as well. A match inside an instruction is reported as the instruction.
+static uval_t imm_value = 0;
+static ushort imm_opts = 0; // 1: search up, 2: find all occurrences
+static bool imm_valid = false;
+static ea_t imm_last = BADADDR; // the last match: the next search continues from it when the cursor is still there
+
+// the 3-byte patterns of the value: the value itself and its mirrors
+static void imm_patterns(compiled_binpat_vec_t* pats, uval_t value) {
+  if (value > 0xFFFFFF) {
+    return;
+  }
+  ea_t canon = data24_target(uint32_t(value));
+  for (uint32_t bank = 0; bank < 0x100; bank++) {
+    uint32_t v = (bank << 16) | (value & 0xFFFF);
+    if (v != value && (canon == BADADDR || data24_target(v) != canon)) {
+      continue;
+    }
+    compiled_binpat_t& pat = pats->push_back();
+    pat.bytes.push_back(uchar(v));
+    pat.bytes.push_back(uchar(v >> 8));
+    pat.bytes.push_back(uchar(v >> 16));
+  }
+}
+
+// a byte match is reported as the instruction it is a part of
+static ea_t imm_report_ea(ea_t ea) {
+  ea_t head = get_item_head(ea);
+  return is_code(get_flags(head)) ? head : ea;
+}
+
+// the next (or previous) 3 bytes forming the value after ea, BADADDR when there are none
+static ea_t find_imm_bytes(ea_t ea, bool up, const compiled_binpat_vec_t& pats) {
+  if (pats.empty()) {
+    return BADADDR;
+  }
+  if (up) {
+    ea_t found = bin_search(inf_get_min_ea(), ea, pats, BIN_SEARCH_BACKWARD | BIN_SEARCH_NOSHOW);
+    return found == BADADDR ? BADADDR : imm_report_ea(found);
+  }
+  for (ea_t from = ea + 1; from < inf_get_max_ea(); ) {
+    ea_t found = bin_search(from, inf_get_max_ea(), pats, BIN_SEARCH_FORWARD | BIN_SEARCH_NOSHOW);
+    if (found == BADADDR) {
+      return BADADDR;
+    }
+    ea_t rep = imm_report_ea(found);
+    if (rep > ea) {
+      return rep;
+    }
+    from = found + 1; // in the instruction the search started from
+  }
+  return BADADDR;
+}
+
+// the next (or previous) match after ea: an IDA one or a 3-byte one, whichever is closer
+static ea_t find_imm_next(ea_t ea, bool up, uval_t value) {
+  compiled_binpat_vec_t pats;
+  imm_patterns(&pats, value);
+  ea_t ida = find_imm(ea, (up ? SEARCH_UP : SEARCH_DOWN) | SEARCH_NEXT | SEARCH_NOSHOW, value);
+  ea_t bytes = find_imm_bytes(ea, up, pats);
+  if (ida == BADADDR) {
+    return bytes;
+  }
+  if (bytes == BADADDR) {
+    return ida;
+  }
+  return up ? qmax(ida, bytes) : qmin(ida, bytes);
+}
+
+static const int imm_widths[] = { CHCOL_HEX | 10, 48 };
+static const char* const imm_header[] = { "Address", "Instruction" };
+
+struct imm_chooser_t : public chooser_t {
+  eavec_t list;
+  qstring title_str; // chooser_t keeps only the pointer
+
+  imm_chooser_t(const qstring& title_) : chooser_t(0, qnumber(imm_widths), imm_widths, imm_header), title_str(title_) {
+    title = title_str.c_str();
+  }
+
+  virtual const void* get_obj_id(size_t* len) const override {
+    *len = strlen(title);
+    return title;
+  }
+  virtual size_t idaapi get_count() const override { return list.size(); }
+  virtual void idaapi get_row(qstrvec_t* cols, int*, chooser_item_attrs_t*, size_t n) const override {
+    (*cols)[0].sprnt("%a", list[n]);
+    generate_disasm_line(&(*cols)[1], list[n], GENDSM_REMOVE_TAGS);
+  }
+  virtual cbret_t idaapi enter(size_t n) override {
+    if (n < list.size()) {
+      jumpto(list[n]);
+    }
+    return cbret_t();
+  }
+  virtual ea_t idaapi get_ea(size_t n) const override {
+    return n < list.size() ? list[n] : BADADDR;
+  }
+};
+
+static void find_imm_all(uval_t value) {
+  qstring title;
+  title.sprnt("Occurrences of: %a", value);
+  imm_chooser_t* ch = new imm_chooser_t(title);
+
+  show_wait_box("Searching for the immediate value...");
+  ea_t found = find_imm(inf_get_min_ea(), SEARCH_DOWN | SEARCH_NOSHOW, value);
+  while (found != BADADDR && !user_cancelled()) {
+    ch->list.push_back(found);
+    found = find_imm(found, SEARCH_DOWN | SEARCH_NEXT | SEARCH_NOSHOW, value);
+  }
+  compiled_binpat_vec_t pats;
+  imm_patterns(&pats, value);
+  if (!pats.empty()) {
+    found = bin_search(inf_get_min_ea(), inf_get_max_ea(), pats, BIN_SEARCH_FORWARD | BIN_SEARCH_NOSHOW);
+    while (found != BADADDR && !user_cancelled()) {
+      ch->list.push_back(imm_report_ea(found));
+      found = bin_search(found + 1, inf_get_max_ea(), pats, BIN_SEARCH_FORWARD | BIN_SEARCH_NOSHOW);
+    }
+  }
+  hide_wait_box();
+
+  if (ch->list.empty()) {
+    delete ch;
+    warning("Search failed.\nImmediate value %a not found", value);
+    return;
+  }
+  std::sort(ch->list.begin(), ch->list.end());
+  ch->list.erase(std::unique(ch->list.begin(), ch->list.end()), ch->list.end());
+  ch->choose();
+}
+
+static void find_imm_from_screen() {
+  bool up = (imm_opts & 1) != 0;
+  ea_t ea = get_screen_ea();
+  // the cursor is still on the item of the last match (e.g. a table): continue from the match itself
+  if (imm_last != BADADDR && get_item_head(imm_last) == get_item_head(ea)) {
+    ea = imm_last;
+  }
+  show_wait_box("Searching for the immediate value...");
+  ea_t found = find_imm_next(ea, up, imm_value);
+  hide_wait_box();
+  if (found == BADADDR) {
+    msg("Search failed: immediate value %a not found\n", imm_value);
+    beep();
+    return;
+  }
+  imm_last = found;
+  jumpto(found);
+}
+
+// handles the action instead of IDA; returns true when it was handled
+bool search_immediate_action(const char* name) {
+  if (name == nullptr) {
+    return false;
+  }
+  bool ask = strcmp(name, "AskNextImmediate") == 0;
+  if (!ask && strcmp(name, "JumpImmediate") != 0) {
+    return false;
+  }
+  if (ask || !imm_valid) {
+    static const char form[] =
+      "Search for immediate value\n"
+      "\n"
+      "<~V~alue to search:N::32::>\n"
+      "<Search ~U~p:C>\n"
+      "<~F~ind all occurrences:C>>\n";
+    uval_t value = imm_value;
+    ushort opts = imm_opts;
+    if (ask_form(form, &value, &opts) <= 0) {
+      return true;
+    }
+    imm_value = value;
+    imm_opts = opts;
+    imm_valid = true;
+    imm_last = BADADDR;
+    if (opts & 2) {
+      find_imm_all(value);
+      return true;
+    }
+  }
+  find_imm_from_screen();
+  return true;
 }
 
 // Local type "data24_t": a 3-byte _TBYTE (tbyte_size is 3 for this processor), so structure fields can be
