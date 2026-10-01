@@ -265,7 +265,7 @@ extern int data24_id;
 extern int data24_num_fid;
 extern int data24_off_fid;
 bool toggle_data24_offset(ea_t ea);
-bool create_data24_offset(ea_t ea);
+bool create_data24(ea_t ea, bool offset);
 bool search_immediate_action(const char* name);
 
 // C (emu.cpp): the code created from the cursor is followed through addresses IDA marked as "not code"
@@ -299,7 +299,7 @@ public:
 		if (toggle_data24_offset(ctx->cur_ea)) {
 			return 1; // d24: number <-> offset
 		}
-		if (create_data24_offset(ctx->cur_ea)) {
+		if (create_data24(ctx->cur_ea, true)) {
 			return 1; // unexplored bytes: d24 offset
 		}
 		ea_clr_bank(ctx->cur_ea);
@@ -829,6 +829,10 @@ struct reg_hint_listener_t : public event_listener_t {
 			if (name != nullptr && strcmp(name, "MakeCode") == 0) {
 				note_user_code(get_screen_ea());
 				return 0;
+			}
+			if (name != nullptr && strcmp(name, "OpHex") == 0) {
+				// Q on unexplored bytes: a d24 number (reg.cpp)
+				return create_data24(get_screen_ea(), false) ? 1 : 0;
 			}
 			// Alt+I / Ctrl+I: any 3 bytes forming the value are searched too (reg.cpp)
 			return search_immediate_action(name) ? 1 : 0;

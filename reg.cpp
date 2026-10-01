@@ -402,10 +402,11 @@ bool toggle_data24_offset(ea_t ea) {
   return false;
 }
 
-// O on unexplored bytes: a d24 offset there (instead of IDA's 4-byte offset). Returns false when the 3 bytes at ea
-// are not all unexplored.
-bool create_data24_offset(ea_t ea) {
-  if (data24_id <= 0 || data24_off_fid <= 0) {
+// O / Q on unexplored bytes: a d24 offset / number there (instead of IDA's 4-byte offset / nothing). Returns false
+// when the 3 bytes at ea are not all unexplored.
+bool create_data24(ea_t ea, bool offset) {
+  int fid = offset ? data24_off_fid : data24_num_fid;
+  if (data24_id <= 0 || fid <= 0) {
     return false;
   }
   for (ea_t a = ea; a < ea + 3; a++) {
@@ -413,11 +414,11 @@ bool create_data24_offset(ea_t ea) {
       return false;
     }
   }
-  if (!create_custdata(ea, 3, data24_id, data24_off_fid)) {
+  if (!create_custdata(ea, 3, data24_id, fid)) {
     return false;
   }
   plan_range(ea, ea + 3);
-  msg("%a: 24-bit offset\n", ea);
+  msg("%a: %s\n", ea, offset ? "24-bit offset" : "24-bit number");
   return true;
 }
 
