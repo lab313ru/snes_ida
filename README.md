@@ -8,7 +8,7 @@ Please feel free to create issues regarding any problems.
 
 # Installation
 
-IDA 9.3 required (the modules are built with the IDA 9.3 SDK).
+IDA 9.4 required (the modules are built with the IDA 9.4 SDK).
 
 Put the loader into IDA's `loaders` folder and the processor module into `procs` (or into `~/.idapro/loaders` and `~/.idapro/procs`).
 IDA's stock `m65816`/`snes` modules no longer need to be renamed: the processor module is registered as `snes816`,
@@ -16,7 +16,12 @@ and in the load dialog the loader is listed as `SNES ROM (snes_ida)`.
 
 Databases created with older builds (processor name `m65816`) still open with this module.
 
-Linux: `make IDA_SDK=/path/to/ida-sdk/src && make install` (installs into `~/.idapro`, together with the Mesen CDL plugin from `ida_plugins`).
+The tile viewer (`snestiles`, see below) is a plugin: put it into `plugins`.
+
+Linux: `make IDA_SDK=/path/to/ida-sdk/src && make install` (installs into `~/.idapro`, together with the tile viewer and the Mesen CDL plugin from `ida_plugins`).
+The tile viewer is built with IDA's Qt: headers from the SDK (`$IDA_SDK/build/qt-install`), libraries from
+`$(IDA_SDK)\lib\x64_win_qt` on Windows and from the IDA installation on Linux (`make IDA_HOME=/path/to/ida-pro-9.4`,
+default `~/ida-pro-9.4`).
 
 # References to data (DB / D)
 
@@ -55,6 +60,20 @@ Where DB / D come from (strongest first):
    `PHD...PLD`, `TDC`, `MVN/MVP`, calls to functions that preserve or set DB / D, and DB=$00, D=$0000 in the reset handler.
    PB doesn't change inside a function; interrupt / reset handlers run in bank $00.
    A value is derived only when it is the same on every known path; the value a function is entered with is unknown.
+
+# Graphics (Shift+D)
+
+`Shift+D` in the disassembly or hex view (also in their context menu) opens the "SNES tiles" panel: the bytes from
+the cursor to the end of its segment (at most 64 KB) shown as 8x8 tiles. The panel follows the cursor.
+
+* Format: 1bpp, 2bpp, 3bpp (2bpp + a third plane of 8 bytes, as stored in some ROMs), 4bpp, 8bpp (planar, as in VRAM),
+  Mode 7 (one byte per pixel).
+* Palette: address of BGR555 colors (2 bytes each, as written to CGRAM; e.g. `7E2000` or `C0:8000`); the number of
+  colors read is that of the format (4bpp - 16). Empty - shades of gray. While debugging, the palette and the tiles
+  are read from the process memory.
+* Zoom; the mouse wheel scrolls. Hovering a tile shows its address, a double click jumps to it.
+
+The settings are stored in the database. The plugin needs Qt, so it isn't loaded by idat / idalib.
 
 # 24-bit values in data
 

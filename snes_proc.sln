@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "snes_proc", "snes_proc.vcxp
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "snes_ldr", "snes_ldr.vcxproj", "{115BE2EB-88CF-45ED-ADB2-D39762192F0A}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "snes_tiles", "snes_tiles.vcxproj", "{5D3E9B1C-7A42-4F6E-9C18-2B6F0D8A4E71}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,10 @@ Global
 		{115BE2EB-88CF-45ED-ADB2-D39762192F0A}.Debug|x64.Build.0 = Debug|x64
 		{115BE2EB-88CF-45ED-ADB2-D39762192F0A}.Release|x64.ActiveCfg = Release|x64
 		{115BE2EB-88CF-45ED-ADB2-D39762192F0A}.Release|x64.Build.0 = Release|x64
+		{5D3E9B1C-7A42-4F6E-9C18-2B6F0D8A4E71}.Debug|x64.ActiveCfg = Debug|x64
+		{5D3E9B1C-7A42-4F6E-9C18-2B6F0D8A4E71}.Debug|x64.Build.0 = Debug|x64
+		{5D3E9B1C-7A42-4F6E-9C18-2B6F0D8A4E71}.Release|x64.ActiveCfg = Release|x64
+		{5D3E9B1C-7A42-4F6E-9C18-2B6F0D8A4E71}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

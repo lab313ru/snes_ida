@@ -8,6 +8,12 @@
 
 #define BANK_PREFIX "BANK"
 
+// Start of the segment containing ea, or BADADDR
+inline ea_t get_segm_start_ea(ea_t ea) {
+	segment_info_t si;
+	return get_segment_info(&si, ea) ? si.start_ea : BADADDR;
+}
+
 enum class m65816_mode : uint8_t {// 
 	Im8, // #$00 - one byte
 	Imm, // #$00/00 - depend on m
@@ -334,8 +340,7 @@ public:
 			start_ea = ctx->cur_ea & 0xFF0000;
 
 			if (!is_mapped(start_ea)) {
-				segment_t* seg = getseg(ctx->cur_ea);
-				start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+				start_ea = get_segm_start_ea(ctx->cur_ea);
 			}
 		} break;
 		case set_offset_bank_mode_t::SOB_SELECT: {
@@ -345,16 +350,14 @@ public:
 			start_ea = ctx->cur_ea & 0xFF0000;
 
 			if (!is_mapped(start_ea)) {
-				segment_t* seg = getseg(ctx->cur_ea);
-				start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+				start_ea = get_segm_start_ea(ctx->cur_ea);
 			}
 
 			segment_t* seg = choose_segm(title.c_str(), start_ea);
 			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
 		} break;
 		case set_offset_bank_mode_t::SOB_ZERO: {
-			segment_t* seg = getseg(0);
-			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+			start_ea = get_segm_start_ea(0);
 		} break;
 		case set_offset_bank_mode_t::SOB_CUSTOM: {
 			ea_t asked_addr = BADADDR;
@@ -363,8 +366,7 @@ public:
 			}
 		} break;
 		default: { // WRAM
-			segment_t* seg = getseg(use_mapping(0)); // by default it points to zero page
-			start_ea = (seg != nullptr) ? seg->start_ea : BADADDR;
+			start_ea = get_segm_start_ea(use_mapping(0)); // by default it points to zero page
 		} break;
 		}
 

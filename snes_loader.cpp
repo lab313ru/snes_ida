@@ -459,15 +459,19 @@ static inline ea_t calc_end_addr(uint32_t bank, uint32_t endAddr) {
 }
 
 static void create_segm(uint32_t bank, uint32_t startAddr, uint32_t endAddr, const char* seg_name, uchar seg_type, const char* seg_class, uchar seg_perm) {
-	segment_t s;
+	segment_info_t s;
 	s.start_ea = calc_start_addr(bank, startAddr);
 	s.end_ea = calc_end_addr(bank, endAddr);
-	s.type = seg_type;
-	s.bitness = 1;
-	s.perm = seg_perm; // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
+	s.set_type(seg_type);
+	s.set_bitness(1);
+	s.set_perm(seg_perm); // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
+	s.set_name(seg_name);
+	if (seg_class != nullptr) {
+		s.set_sclass(seg_class);
+	}
 
-	add_segm_ex(&s, seg_name, seg_class, ADDSEG_NOSREG | ADDSEG_OR_DIE);
-	set_default_sreg_value(&s, m65816_regs::rVds, s.start_ea);
+	add_segment_ex(&s, ADDSEG_NOSREG | ADDSEG_OR_DIE);
+	set_default_sreg_value_ea(s.start_ea, m65816_regs::rVds, s.start_ea);
 }
 
 static void RegisterHandlerPrg(const uint8_t *_prgRom, uint32_t _prgRomSize, uint8_t startBank, uint8_t endBank, uint16_t startAddr, uint16_t endAddr, uint16_t pageIncrement, uint16_t startPageNumber, uint32_t handlersSize, std::map<uint32_t, ea_t>& mirrors) {
@@ -768,14 +772,15 @@ static void AddRegsLabels() {
 }
 
 static void AddZeroPage() {
-	segment_t s;
+	segment_info_t s;
 	s.start_ea = 0;
 	s.end_ea = 0;
-	s.type = SEG_NULL;
-	s.bitness = 1;
-	s.perm = SEGPERM_READ; // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
+	s.set_type(SEG_NULL);
+	s.set_bitness(1);
+	s.set_perm(SEGPERM_READ); // asCode ? (SEGPERM_EXEC | SEGPERM_READ) : SEGPERM_MAXVAL;
+	s.set_name("ZERO");
 
-	add_segm_ex(&s, "ZERO", nullptr, ADDSEG_NOSREG | ADDSEG_OR_DIE);
+	add_segment_ex(&s, ADDSEG_NOSREG | ADDSEG_OR_DIE);
 }
 
 static int check_or_load(linput_t* li, bool load) {
@@ -962,7 +967,8 @@ void idaapi load_file(linput_t* li, ushort neflags, const char* fileformatname) 
 	jumpto(reset_vector);
 }
 
-idaman loader_t  ida_module_data LDSC = {
+idaman loader_t ida_module_data LDSC;
+loader_t LDSC = {
   IDP_INTERFACE_VERSION,
   LDRF_RELOAD,
   accept_file,

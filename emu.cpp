@@ -33,8 +33,8 @@ void m65816_t::handle_operand(const op_t& x, bool read_access, const insn_t& ins
       insn.add_dref(target, x.offb, read_access ? dr_R : dr_W);
       // data of the accessed size, like O does (not in the registers area: a word would hide the next register's name)
       // (not for an indexed operand: its address may never be accessed itself)
-      segment_t* seg = getseg(target);
-      if (seg != nullptr && seg->type != SEG_XTRN && !is_indexed_operand(insn)) {
+      segment_info_t seg;
+      if (get_segment_info(&seg, target) && seg.get_type() != SEG_XTRN && !is_indexed_operand(insn)) {
         insn.create_op_data(target, x);
       }
       break;

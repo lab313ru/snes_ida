@@ -120,7 +120,7 @@ bool decodes_cleanly(const std::vector<piece_t>& path, uint8_t flags, ea_t confl
 void undefine_orphan_code(ea_t ea) {
 	for (int n = 0; n < MAX_SIM_INSNS; n++) {
 		flags64_t f = get_flags(ea);
-		if (!is_code(f) || has_user_name(f) || get_func(ea) != nullptr && get_func(ea)->start_ea == ea) {
+		if (!is_code(f) || has_user_name(f) || get_func_start(ea) == ea) {
 			return;
 		}
 		xrefblk_t xb;
@@ -348,8 +348,8 @@ bool fix_conflict(ea_t conflict, ushort idpflags) {
 
 	uint8_t other = (nearest == m65816_flags::MemoryMode8) ? m65816_flags::IndexMode8 : m65816_flags::MemoryMode8;
 	uint8_t candidates[3] = {
-		nearest != 0 ? nearest : m65816_flags::MemoryMode8,
-		nearest != 0 ? other : m65816_flags::IndexMode8,
+		(uint8_t)(nearest != 0 ? nearest : m65816_flags::MemoryMode8),
+		(uint8_t)(nearest != 0 ? other : m65816_flags::IndexMode8),
 		0x30,
 	};
 

@@ -106,7 +106,7 @@ void m65816_t::on_auto_idle() {
     todo.swap(failed_funcs);
     for (auto& it : todo) {
       ea_t ea = it.first;
-      if (!is_code(get_flags(ea)) || get_func(ea) != nullptr) {
+      if (!is_code(get_flags(ea)) || get_func_start(ea) != BADADDR) {
         continue;
       }
       if (add_func(ea)) {
@@ -353,7 +353,7 @@ bool toggle_data24_type_member(const til_type_ref_t* ref) {
     return false;
   }
   // instances in the listing show the new representation
-  request_refresh(IWID_DISASM);
+  refresh_idaview_anyway();
   return true;
 }
 

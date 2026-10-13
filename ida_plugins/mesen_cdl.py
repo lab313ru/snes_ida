@@ -463,6 +463,13 @@ if IN_IDA:
     def _get_node():
         return ida_netnode.netnode(NETNODE_NAME, 0, True)
 
+    def _func_start(ea):
+        """Start of the function containing ea, or BADADDR (get_func is deprecated since IDA 9.4)"""
+        if hasattr(ida_funcs, "get_func_start"):
+            return ida_funcs.get_func_start(ea)
+        func = ida_funcs.get_func(ea)
+        return func.start_ea if func is not None else BADADDR
+
     def _set_comment(ea, text):
         """Replaces the 'Mesen:' line of the regular comment, keeping the user's text."""
         old = ida_bytes.get_cmt(ea, False) or ""
@@ -594,12 +601,12 @@ Apply Mesen CDL
                     ea = self.map((LOC_PRGROM << 28) | off, 0)
                     if ea == BADADDR:
                         continue
-                    func = ida_funcs.get_func(ea)
-                    if func is not None and func.start_ea == ea:
+                    start = _func_start(ea)
+                    if start == ea:
                         continue
-                    if func is not None:
+                    if start != BADADDR:
                         # entry point inside another function: split it off
-                        ida_funcs.set_func_end(func.start_ea, ea)
+                        ida_funcs.set_func_end(start, ea)
                     if ida_funcs.add_func(ea):
                         self._count("functions created")
 

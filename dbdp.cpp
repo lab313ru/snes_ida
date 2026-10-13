@@ -186,7 +186,7 @@ public:
 	ea_t reset_entry = BADADDR; // after a reset the CPU starts with DB = $00, D = $0000
 	std::set<ea_t> vector_entries; // interrupt / reset handlers: always run in bank $00
 
-	const func_result_t& analyze(func_t* pfn);
+	const func_result_t& analyze(ea_t func_ea);
 	summary_t call_summary(ea_t target);
 	size_t store();
 
@@ -195,15 +195,14 @@ private:
 };
 
 summary_t propagator_t::call_summary(ea_t target) {
-	func_t* callee = get_func(target);
-	if (callee == nullptr || callee->start_ea != target) {
+	if (get_func_start(target) != target) {
 		return summary_t::unknown();
 	}
-	auto it = in_progress.find(callee->start_ea);
+	auto it = in_progress.find(target);
 	if (it != in_progress.end() && it->second) {
 		return summary_t::unknown(); // recursion
 	}
-	const func_result_t& r = analyze(callee);
+	const func_result_t& r = analyze(target);
 	return r.summary.returns ? r.summary : summary_t::unknown();
 }
 
@@ -397,14 +396,14 @@ bool is_branch_opcode(uint8_t op) {
 // PB a function is entered with, when every call gives the same bank: JSL / JML long carry it in the operand;
 // JSR / JMP / branches keep the PB of the calling instruction, used when it is known from the Mesen CDL or set manually.
 // Any other reference (indirect long jump, data, ordinary flow) makes it unknown.
-val_t entry_pb_from_callers(func_t* pfn) {
+val_t entry_pb_from_callers(ea_t func_ea) {
 	int bank = -1;
 	xrefblk_t xb;
-	for (bool ok = xb.first_to(pfn->start_ea, XREF_ALL); ok; ok = xb.next_to()) {
+	for (bool ok = xb.first_to(func_ea, XREF_ALL); ok; ok = xb.next_to()) {
 		if (!xb.iscode || xb.type == fl_F) {
 			return val_t::make(VK_ENTRY);
 		}
-		if (get_func(xb.from) == pfn) {
+		if (get_func_start(xb.from) == func_ea) {
 			continue; // a loop back to the entry: the same PB
 		}
 		int b;
@@ -431,27 +430,27 @@ val_t entry_pb_from_callers(func_t* pfn) {
 	return bank >= 0 ? val_t::cnst((uint16_t)bank) : val_t::make(VK_ENTRY);
 }
 
-const func_result_t& propagator_t::analyze(func_t* pfn) {
-	auto found = results.find(pfn->start_ea);
+const func_result_t& propagator_t::analyze(ea_t func_ea) {
+	auto found = results.find(func_ea);
 	if (found != results.end()) {
 		return found->second;
 	}
 
-	in_progress[pfn->start_ea] = true;
+	in_progress[func_ea] = true;
 	func_result_t res;
 
 	state_t entry;
 	entry.db = val_t::make(VK_ENTRY);
 	entry.d = val_t::make(VK_ENTRY);
-	entry.pb = vector_entries.count(pfn->start_ea) != 0 ? val_t::cnst(0) : entry_pb_from_callers(pfn);
-	if (pfn->start_ea == reset_entry) {
+	entry.pb = vector_entries.count(func_ea) != 0 ? val_t::cnst(0) : entry_pb_from_callers(func_ea);
+	if (func_ea == reset_entry) {
 		entry.db = val_t::cnst(0);
 		entry.d = val_t::cnst(0);
 	}
-	res.in_states[pfn->start_ea] = entry;
+	res.in_states[func_ea] = entry;
 
 	std::deque<ea_t> work;
-	work.push_back(pfn->start_ea);
+	work.push_back(func_ea);
 	size_t steps = 0;
 
 	while (!work.empty() && steps++ < 500000) {
@@ -474,16 +473,16 @@ const func_result_t& propagator_t::analyze(func_t* pfn) {
 		}
 
 		auto propagate = [&](ea_t to) {
-			func_t* tf = get_func(to);
-			if (tf == nullptr || tf->start_ea != pfn->start_ea) {
+			ea_t tf = get_func_start(to);
+			if (tf != func_ea) {
 				// jump out of the function: a tail call when it is a function start
-				summary_t s = (tf != nullptr && tf->start_ea == to) ? call_summary(to) : summary_t::unknown();
+				summary_t s = (tf != BADADDR && tf == to) ? call_summary(to) : summary_t::unknown();
 				state_t ret = st;
 				apply_summary(ret, s);
 				res.summary.add_return(ret);
 				return;
 			}
-			if (to == pfn->start_ea) {
+			if (to == func_ea) {
 				return; // loop to the entry: the entry state is symbolic, keep it
 			}
 			auto it = res.in_states.find(to);
@@ -509,8 +508,8 @@ const func_result_t& propagator_t::analyze(func_t* pfn) {
 		}
 	}
 
-	in_progress[pfn->start_ea] = false;
-	return results[pfn->start_ea] = std::move(res);
+	in_progress[func_ea] = false;
+	return results[func_ea] = std::move(res);
 }
 
 size_t propagator_t::store() {
@@ -574,8 +573,7 @@ size_t propagator_t::store() {
 // Reset handler, when nothing else in the code jumps/calls to it (a soft reset could run it with other values)
 static ea_t get_reset_entry() {
 	ea_t entry = get_reset_vector_target();
-	func_t* pfn = get_func(entry);
-	if (pfn == nullptr || pfn->start_ea != entry || !is_reset_entry(entry)) {
+	if (entry == BADADDR || get_func_start(entry) != entry || !is_reset_entry(entry)) {
 		return BADADDR;
 	}
 	return entry;
@@ -592,9 +590,8 @@ static std::set<ea_t> get_vector_entries() {
 			continue;
 		}
 		ea_t entry = use_mapping(get_word(vec));
-		func_t* pfn = get_func(entry);
 		xrefblk_t xb;
-		if (pfn != nullptr && pfn->start_ea == entry && !xb.first_to(entry, XREF_CODE)) {
+		if (get_func_start(entry) == entry && !xb.first_to(entry, XREF_CODE)) {
 			result.insert(entry);
 		}
 	}
@@ -607,9 +604,9 @@ size_t propagate_known_regs() {
 	prop.vector_entries = get_vector_entries();
 	size_t qty = get_func_qty();
 	for (size_t i = 0; i < qty; i++) {
-		func_t* pfn = getn_func(i);
-		if (pfn != nullptr) {
-			prop.analyze(pfn);
+		ea_t func_ea = get_func_ea_by_num(i);
+		if (func_ea != BADADDR) {
+			prop.analyze(func_ea);
 		}
 	}
 	return prop.store();
