@@ -1,4 +1,6 @@
 .vs/**
+.vscode/**
+*.pyc
 releases/**
 snes_ldr/**
 snes_proc/**
